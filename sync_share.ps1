@@ -53,11 +53,37 @@
   # Ссылка на документацию Robocopy.
 #>
 
-# Настройки Telegram API
-$BOT_TOKEN = "You_API_Token_Here"
-$CHAT_ID = "chat_id_here"
-$MESSAGE_THREAD_ID = "message_thread_id_here" # Если не используется, оставьте пустым ""
+# =====================================================================
+# ИМПОРТ НАСТРОЕК
+# =====================================================================
+
+$ConfigFilePath = Join-Path (Split-Path $MyInvocation.MyCommand.Path) "config.psd1"
+
+# Проверяем, существует ли файл конфигурации
+if (-not (Test-Path $ConfigFilePath)) {
+    Write-Error "Критическая ошибка: Файл конфигурации $ConfigFilePath не найден!"
+    exit 1
+}
+
+# Импортируем все переменные в хэш-таблицу $Config
+$Config = Import-PowerShellDataFile -Path $ConfigFilePath
+
+# =====================================================================
+# ИНИЦИАЛИЗАЦИЯ ПЕРЕМЕННЫХ
+# =====================================================================
+
+# Настройки Telegram
+$BOT_TOKEN = $Config.BOT_TOKEN
+$CHAT_ID = $Config.CHAT_ID
+$MESSAGE_THREAD_ID = $Config.MESSAGE_THREAD_ID
 $TelegramAPI = "https://api.telegram.org/bot$BOT_TOKEN/sendMessage"
+
+# Настройки логгирования
+$LogDir = $Config.LogDirectory
+If (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -Type Directory | Out-Null }
+$LogFile = "$LogDir\DataShare_Sync_Log_$(Get-Date -Format dd-MM-yyyy_HH-mm).txt"
+# 
+
 
 # Настройки источника и приемника
 $SOURCE = "\\s-fs03\Файловое хранилище"
@@ -97,10 +123,6 @@ $CriticalErrorHexCodes = @(
     # Добавляйте другие HEX-коды здесь
 )
 
-# Настройки логгирования
-$LogDir = "d:\Logs\Robocopy"
-If (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -Type Directory | Out-Null }
-$LogFile = "$LogDir\DataShare_Sync_Log_$(Get-Date -Format dd-MM-yyyy_HH-mm).txt"
 
 # =====================================================================
 # ФУНКЦИЯ УВЕДОМЛЕНИЯ
