@@ -72,7 +72,7 @@ $Config = Import-PowerShellDataFile -Path $ConfigFilePath
 # ИНИЦИАЛИЗАЦИЯ ПЕРЕМЕННЫХ
 # =====================================================================
 
-# Настройки Telegram
+# Настройки Telegrama
 $BOT_TOKEN = $Config.BOT_TOKEN
 $CHAT_ID = $Config.CHAT_ID
 $MESSAGE_THREAD_ID = $Config.MESSAGE_THREAD_ID
@@ -84,10 +84,9 @@ If (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -Type Directory | Out-Nul
 $LogFile = "$LogDir\DataShare_Sync_Log_$(Get-Date -Format dd-MM-yyyy_HH-mm).txt"
 # 
 
-
-# Настройки источника и приемника
-$SOURCE = "\\s-fs03\Файловое хранилище"
-$DESTINATION = "D:\Bckp\File_Share"
+# Настройки источника и приемника вынесены в config.psd1
+$SOURCE = $Config.SOURCE
+$DESTINATION = $Config.DESTINATION
 
 # НАСТРОЙКА ИСКЛЮЧЕНИЙ: Добавляйте или удаляйте шаблоны здесь
 $ExcludedFiles = @(

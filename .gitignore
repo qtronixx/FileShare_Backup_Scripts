@@ -1,0 +1,6 @@
+# PowerShell
+*.psd1
+# Логи Robocopy
+*.txt
+# Временные файлы
+*.tmp
