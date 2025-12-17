@@ -68,6 +68,8 @@ if (-not (Test-Path $ConfigFilePath)) {
 
 # Импортируем все переменные в хэш-таблицу $Config
 $Config = Import-PowerShellDataFile -Path $ConfigFilePath
+# Более надежный способ загрузки конфига, если строгий парсер не справляется
+#$Config = Invoke-Expression (Get-Content -Path $ConfigFilePath -Raw)
 
 # =====================================================================
 # ИНИЦИАЛИЗАЦИЯ ПЕРЕМЕННЫХ
@@ -213,10 +215,44 @@ $StartTelegramMessage += "`n*Начало:* $(Get-Date -Format G)"
 $StartTelegramMessage += "`n*Источник:* $SOURCE"
 Send-TelegramNotification -Message $StartTelegramMessage
 
-# Запуск Robocopy с параметрами
-robocopy $SOURCE $DESTINATION /MIR /SEC /MT:64 /R:5 /W:5 /NP /XA:SH /XJ /NFL /NDL /NS `
-    /XF $($ExcludedFiles -join ' ') `
-    2>&1 | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+# =====================================================================
+# ФОРМИРОВАНИЕ ПАРАМЕТРОВ ROBOCOPY
+# =====================================================================
+
+$RoboParams = @(
+    $SOURCE, 
+    $DESTINATION,
+    "/NP", "/XA:SH", "/XJ", "/NFL", "/NDL", "/NS" # Базовые параметры
+)
+
+# Динамически добавляем ключи на основе конфига
+if ($Config.EnableMIR) { $RoboParams += "/MIR" }
+if ($Config.EnableSEC) { $RoboParams += "/SEC" }
+
+# Параметры с переменными значениями
+$RoboParams += "/MT:$($Config.MultiThread)"
+$RoboParams += "/R:$($Config.MaxRetries)"
+$RoboParams += "/W:$($Config.WaitTime)"
+
+# Добавляем исключения файлов
+if ($ExcludedFiles) {
+    $RoboParams += "/XF"
+    $RoboParams += $ExcludedFiles # Массив вставится корректно
+}
+
+# Добавляем исключения директорий (если они определены в конфиге или скрипте) - с ним пока ошибка
+#if ($ExcludedDirs) {
+#    $RoboParams += "/XD"
+#    $RoboParams += $ExcludedDirs
+#}
+
+# =====================================================================
+# ЗАПУСК
+# =====================================================================
+"$(Get-Date -Format G) [ИНФО] Команда: robocopy $($RoboParams -join ' ')" | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+
+# Запуск через оператор & (call operator)
+& robocopy @RoboParams 2>&1 | Out-File -FilePath $LogFile -Encoding UTF8 -Append
 
 # =====================================================================
 # ПРОВЕРКА РЕЗУЛЬТАТА И ОПОВЕЩЕНИЕ (ОБНОВЛЁННАЯ ЛОГИКА С ПОИСКОМ ПО HEX-КОДАМ)
