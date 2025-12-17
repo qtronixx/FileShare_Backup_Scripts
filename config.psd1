@@ -11,16 +11,20 @@
     CHAT_ID = "-Chat ID"
     MESSAGE_THREAD_ID = "19" # If needed thread ID
     
-    # ==================================
+# ==================================
     # Основные настройки бэкапа
     # ==================================
-    LogDirectory = "d:\Logs\Robocopy"
+    LogDirectory = 'C:\Logs' # 'D:\Bckp\Logs'
     
     # Настройки источника и приемника
-    SOURCE = "\\s-fs03\Файловое хранилище"
-    DESTINATION = "D:\Bckp\File_Share"
+    SOURCE = '\\s-fs03\Файловое хранилище' # '\\s-fs03\Файловое хранилище'
+    DESTINATION = 'C:\tmp' # 'D:\Bckp\File_Share'
 
-
-    # Можно также вынести массив задач SyncJobs сюда, 
-    # если он редко меняется и не содержит сложных объектов
+    # Управление параметрами Robocopy
+    EnableSEC  = $false   # Копировать права безопасности (/SEC)
+    EnableMIR  = $true   # Зеркалирование (/MIR)
+    MultiThread = 64      # Количество потоков (/MT)
+    MaxRetries  = 5       # Количество попыток (/R)
+    WaitTime    = 5      # Время ожидания между попытками (/W)
+    
 }
