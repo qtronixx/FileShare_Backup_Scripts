@@ -82,7 +82,6 @@ $TelegramAPI = "https://api.telegram.org/bot$BOT_TOKEN/sendMessage"
 # Настройки логгирования
 $LogDir = $Config.LogDirectory
 If (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -Type Directory | Out-Null }
-$LogFile = "$LogDir\DataShare_Sync_Log_$(Get-Date -Format dd-MM-yyyy_HH-mm).txt"
 # 
 
 # Настройки источника и приемника вынесены в config.psd1
