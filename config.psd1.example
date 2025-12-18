@@ -17,6 +17,9 @@
     3. Гибкость наследования: Достаточно указать только обязательные параметры (Name, Source, Destination, LogName). / 
        [cite_start]Inheritance Flexibility: Only mandatory parameters are required (Name, Source, Destination, LogName). [cite: 29]
        Остальное подтянется из глобальных настроек автоматически. [cite_start]/ Everything else will be inherited from global settings automatically. [cite: 30]
+    
+    4. передача параметра из командной строки, для выполнения конкретной задачи из массива Tasks. / 
+       Passing a parameter from the command line to execute a specific task from the Tasks array. [cite: 31]
 #>
 
 @{

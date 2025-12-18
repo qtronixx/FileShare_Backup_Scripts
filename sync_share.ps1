@@ -1,8 +1,9 @@
 ﻿<#
 .SYNOPSIS
   Многозадачный скрипт зеркалирования на базе Robocopy с иерархией настроек и уведомлениями в Telegram.
+  передача параметра из командной строки, для выполнения конкретной задачи из массива Tasks.
 .NOTES
-  Версия: 2.1 (Multi-Task Inheritance)
+  Версия: 1.1.0 (dev) (Multi-Task Inheritance)
   Автор: Qtronix (Dmitry V Orlov)
 #>
 
