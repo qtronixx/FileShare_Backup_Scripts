@@ -44,7 +44,7 @@ An automation script for mirroring file storages and databases based on **PowerS
 ⚙️ Settings Inheritance
 If a parameter (e.g., MultiThread) is not specified within a task, it will be inherited from the global section. This allows for centralized management of settings across your entire infrastructure.
 
-PowerShell
+```PowerShell
 
   Tasks = @(
       @{
