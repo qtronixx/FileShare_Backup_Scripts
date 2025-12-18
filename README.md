@@ -24,7 +24,7 @@
 
 1. **Клонируйте репозиторий:**
    ```bash
-   git clone [https://github.com/ВАШ_НИК/FileShare_Backup_Scripts.git](https://github.com/ВАШ_НИК/FileShare_Backup_Scripts.git)
+   git clone [https://github.com/qtronixx/FileShare_Backup_Scripts.git](https://github.com/ВАШ_НИК/FileShare_Backup_Scripts.git)
 2. Настройте конфигурацию:
 
     Переименуйте config.psd1.example в config.psd1.
