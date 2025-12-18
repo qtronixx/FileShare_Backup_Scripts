@@ -1,8 +1,8 @@
-# PowerShell
-*.psd1
-# Логи Robocopy
+# Секреты
+config.psd1
+# Логи и временные файлы
 *.txt
-# Временные файлы
-*.tmp
+Archive/
+*.log
 # Файл ToDO
 todo*
