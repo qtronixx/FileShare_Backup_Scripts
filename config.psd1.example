@@ -1,63 +1,66 @@
 ﻿<#
-
 .SYNOPSIS
-    Файл конфигурации для скрипта sync_share.ps1
-    Внимание!!! Требуется сохранение в кодировке UTF8 с BOM !!!
+    Файл конфигурации для скрипта sync_share.ps1 / Configuration file for sync_share.ps1 script
+    Внимание!!! / Attention!!!
+    Требуется сохранение в кодировке UTF8 с BOM !!! [cite_start]/ Must be saved in UTF8 with BOM encoding !!! [cite: 25]
 
 .NOTES
-    Несколько важных моментов по работе с массивом задач:
-    1.  Количество задач: Вы можете добавить 3, 5, 10 или даже 50 блоков @{ ... } в массив Tasks. 
-        Скрипт будет обрабатывать их строго по очереди: сначала завершит первую, отправит уведомление, затем приступит ко второй и так далее. 
-    2.  Уникальность имен: Главное — следите, чтобы у каждой задачи был уникальный LogName. 
-        Если у двух задач будет одинаковый LogName, они будут пытаться писать в один и тот же файл лога одновременно или перезаписывать его, что создаст кашу в отчетах. 
-    3.  Гибкость наследования: Как мы и реализовали, для каждой новой задачи вам достаточно указать только обязательные параметры (Name, Source, Destination, LogName). 
-        Всё остальное (потоки, исключения, флаги) подтянется из глобальных настроек автоматически, если вы не решите их переопределить конкретно для этой задачи. 
-    4.  Порядок выполнения: Задачи выполняются в том порядке, в котором они описаны в файле конфигурации.
+    Несколько важных моментов по работе с массивом задач: / Key points for working with the Tasks array:
+    1. Количество задач: Вы можете добавить любое количество блоков @{ ... } в массив Tasks. / 
+       Task count: You can add any number of @{ ... } blocks to the Tasks array.
+       Скрипт будет обрабатывать их строго по очереди. [cite_start]/ The script will process them strictly in order. [cite: 26]
 
+    2. Уникальность имен: У каждой задачи должен быть уникальный LogName. / 
+       [cite_start]Unique Names: Each task must have a unique LogName. [cite: 27]
+       Это предотвратит конфликты при записи логов. [cite_start]/ This prevents conflicts when writing logs. [cite: 28]
 
+    3. Гибкость наследования: Достаточно указать только обязательные параметры (Name, Source, Destination, LogName). / 
+       [cite_start]Inheritance Flexibility: Only mandatory parameters are required (Name, Source, Destination, LogName). [cite: 29]
+       Остальное подтянется из глобальных настроек автоматически. [cite_start]/ Everything else will be inherited from global settings automatically. [cite: 30]
 #>
 
 @{
-    # ==================================
-    # Глобальные настройки (по умолчанию)
-    # ==================================
+    # ==========================================================
+    # Глобальные настройки (по умолчанию) / Global Settings (Default)
+    # ==========================================================
     BOT_TOKEN         = 'You_Bot_Token_Here'
     CHAT_ID           = 'Your_Chat_ID_Here'
     MESSAGE_THREAD_ID = 'Your_Message_Thread_ID_Here_If_Needed'
 
-    # глобальная директория для логов
+    # Глобальная директория для логов / Global directory for logs
     LogDirectory      = 'C:\Logs'
 
-    # Глобальные параметры Robocopy которые применятся по умолчанию ко всем задачам. 
-    # Параметры можно переопределить в каждой задаче отдельно
-    EnableSEC         = $true   # Включить сохранение атрибутов безопасности NTFS
-    EnableMIR         = $true   # Включить зеркалирование (MIR)
-    MultiThread       = 64      # Количество потоков
-    MaxRetries        = 5       # Максимальное количество повторных попыток при ошибках
-    WaitTime          = 5       # Время ожидания между повторными попытками (в секундах)
+    # Глобальные параметры Robocopy / Global Robocopy parameters
+    # [cite_start]Параметры можно переопределить в каждой задаче / Parameters can be overridden in each task [cite: 33]
+    EnableSEC         = $true   # Сохранять атрибуты безопасности NTFS / Copy NTFS security attributes
+    EnableMIR         = $true   # Включить зеркалирование / Enable mirroring (MIR)
+    MultiThread       = 64      # Количество потоков / Number of threads
+    MaxRetries        = 5       # Повторные попытки при ошибках / Max retries on errors
+    [cite_start]WaitTime          = 5       # Ожидание между попытками (сек) / Wait time between retries (sec) [cite: 34]
 
-    # Глобальные исключения (если не заданы в задаче)
+    # Глобальные исключения / Global exclusions
     GlobalExcludedFiles = @("Thumbs.db", "~*.*", "*.tmp", "*.log", ".DS_Store", "desktop.ini")
     GlobalExcludedDirs  = @("Cache", "Temp")
 
-    # ==================================
-    # МАССИВ ЗАДАЧ
-    # ==================================
+    # ==========================================================
+    # МАССИВ ЗАДАЧ / TASKS ARRAY
+    # ==========================================================
     Tasks = @(
         @{
-            Name          = "Бэкап Файлопомойки"
-            Source        = '\\fileserver\share\subfolder\subfolder2'
+            [cite_start]Name          = "Бэкап Файлопомойки / FileShare Backup" [cite: 35]
+            Source        = '\\fileserver\share\subfolder'
             Destination   = 'd:\archive\FileShare'
             LogName       = "Bckp_FileShare"
-            # Здесь НЕТ ExcludedFiles, значит возьмет GlobalExcludedFiles
-            EnableSEC     = $false
+            # Возьмет GlobalExcludedFiles / Will use GlobalExcludedFiles
+            [cite_start]EnableSEC     = $false [cite: 36]
         },
         @{
-            Name          = "Бэкап Скуля"
+            Name          = "Бэкап Скуля / SQL Backup"
             Source        = '\\sqlsrv\backup_sql\full'
             Destination   = 'C:\tmp\SQL_Backup'
             LogName       = "Bckp_SQL"
-            # Переопределяем исключения только для этой задачи
+  
+            # [cite_start]Переопределяем параметры для этой задачи / Overriding parameters for this task [cite: 37]
             EnableSEC     = $false
             MultiThread   = 8
             ExcludedFiles = @("*.old", "temp_invoice.pdf") 

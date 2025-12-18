@@ -1,54 +1,56 @@
-  # PS-MultiSync-Backup 🚀
+# PS-MultiSync-Backup 🚀
 
- скрипт для автоматизации зеркалирования файловых хранилищ и баз данных на базе **PowerShell** и **Robocopy**. Спроектирован для использования в корпоративной IT-инфраструктуре.
- 
+An automation script for mirroring file storages and databases based on **PowerShell** and **Robocopy**. Designed specifically for enterprise IT infrastructure.
 
-## ✨ Основные возможности
-- **Многозадачность:** Выполнение любого количества задач резервного копирования за один запуск.
-- **Иерархия настроек:** Глобальные параметры (потоки, исключения, флаги) автоматически применяются ко всем задачам, если не переопределены внутри конкретной задачи.
-- **Умные уведомления в Telegram:** Отдельные статусы (Успех, Внимание, Ошибка) с указанием конкретной задачи и сервера.
-- **Глубокая диагностика:** Скрипт анализирует логи Robocopy на наличие специфических Win32 ошибок (например, `0x00000005` — доступ запрещен), даже если общий код завершения считается успешным.
-- **Автоматическая ротация:** Логи архивируются по папкам `Год/Месяц`, предотвращая замусоривание рабочей директории.
-- **Продвинутая обработка ошибок:**
-  - Скрипт не полагается только на код завершения Robocopy (`$LASTEXITCODE`), который является суммой битовых флагов.
-  - Он использует настраиваемые списки: `$NonCriticalExitCodes` и `$CriticalErrorHexCodes` для точного определения критичности сбоя.
-  - Если код завершения находится в списке некритических, но в логе обнаруживаются **заданные HEX-коды критических ошибок Win32** (например, Отказано в доступе), статус задачи повышается до **"ВНИМАНИЕ"**.
- 
-## 🛠 Требования
-- ОС Windows / Windows Server.
-- PowerShell 5.1 (стандартный).
-- Запуск под доменной сервисной учетной записью с правами чтения всей файловой шары.
-- Важно: Сохраняйте файл в кодировке UTF-8 with BOM для корректной работы кириллицы.
+## ✨ Key Features
+- **Multitasking:** Execute any number of backup tasks in a single run.
+- **Configuration Hierarchy:** Global parameters (threads, exclusions, flags) are automatically applied to all tasks unless overridden within a specific task.
+- **Smart Telegram Notifications:** Distinct status alerts (Success, Warning, Error) including the specific task name and server source.
+- **Deep Diagnostics:** The script analyzes Robocopy logs for specific Win32 errors (e.g., `0x00000005` — Access Denied), even if the overall exit code suggests success.
+- **Automatic Rotation:** Logs are archived into `Year/Month` folder structures, preventing working directory clutter.
+- **Advanced Error Handling:**
+  - The script doesn't rely solely on the Robocopy exit code (`$LASTEXITCODE`), which is a sum of bitwise flags.
+  - It utilizes customizable lists: `$NonCriticalExitCodes` and `$CriticalErrorHexCodes` for precise failure criticality assessment.
+  - If the exit code is considered non-critical, but **specific critical Win32 HEX codes** (like Access Denied) are found within the log file, the task status is upgraded to **"WARNING"**.
 
-## 🚀 Быстрый старт
+## 🛠 Requirements
+- Windows OS / Windows Server.
+- PowerShell 5.1 (Standard).
+- Execution under a domain service account with read permissions for the target file shares.
+- **Important:** Save the script and config files using **UTF-8 with BOM** encoding to ensure correct Cyrillic character handling.
 
-1. **Клонируйте репозиторий:**
+## 🚀 Quick Start
+
+1. **Clone the repository:**
    ```bash
-   git clone [https://github.com/qtronixx/FileShare_Backup_Scripts.git]
-2. Настройте конфигурацию:
+   git clone [https://github.com/qtronixx/FileShare_Backup_Scripts.git](https://github.com/qtronixx/FileShare_Backup_Scripts.git)
 
-    Переименуйте config.psd1.example в config.psd1.
+  Configure the script:
 
-    Важно: Сохраняйте файл в кодировке UTF-8 with BOM для корректной работы кириллицы.
+  Rename config.psd1.example to config.psd1.
 
-    Укажите ваш BOT_TOKEN, CHAT_ID и при необходимости MESSAGE_THREAD_ID.
+  Set your BOT_TOKEN, CHAT_ID, and MESSAGE_THREAD_ID (if applicable).
 
-3. Добавьте задачи: Отредактируйте массив Tasks в файле конфигурации.
+  Note: Ensure the file is saved in UTF-8 with BOM.
 
-4. Настройте Планировщик задач:
+2. Add Tasks: Edit the Tasks array in the configuration file.
 
-    Программа: powershell.exe
+3. Setup Task Scheduler:
 
-    Аргументы: -ExecutionPolicy Bypass -File "C:\Path\To\sync_share.ps1"
+  Program/script: powershell.exe
 
-⚙️ Наследование настроек
-Если в задаче не указан параметр (например, MultiThread), он будет взят из глобального раздела. Это позволяет централизованно менять настройки для всей инфраструктуры.
+  Add arguments: -ExecutionPolicy Bypass -File "C:\Path\To\sync_share.ps1"
+
+⚙️ Settings Inheritance
+If a parameter (e.g., MultiThread) is not specified within a task, it will be inherited from the global section. This allows for centralized management of settings across your entire infrastructure.
+
+PowerShell
 
   Tasks = @(
       @{
-          Name        = "Бэкап SQL"
+          Name        = "SQL Backup"
           Source      = "\\Server\SQL_Backup"
           Destination = "D:\Backup\SQL"
-          MultiThread = 8   # Переопределяем только для этой задачи
+          MultiThread = 8   # Overriding for this specific task only
       }
   )
