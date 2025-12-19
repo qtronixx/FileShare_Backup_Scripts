@@ -30,44 +30,69 @@
     CHAT_ID           = 'Your_Chat_ID_Here'
     MESSAGE_THREAD_ID = 'Your_Message_Thread_ID_Here_If_Needed'
 
-    # Глобальная директория для логов / Global directory for logs
+    # глобальная директория для логов
     LogDirectory      = 'C:\Logs'
 
-    # Глобальные параметры Robocopy / Global Robocopy parameters
-    # [cite_start]Параметры можно переопределить в каждой задаче / Parameters can be overridden in each task [cite: 33]
-    EnableSEC         = $true   # Сохранять атрибуты безопасности NTFS / Copy NTFS security attributes
-    EnableMIR         = $true   # Включить зеркалирование / Enable mirroring (MIR)
-    MultiThread       = 64      # Количество потоков / Number of threads
-    MaxRetries        = 5       # Повторные попытки при ошибках / Max retries on errors
-    [cite_start]WaitTime          = 5       # Ожидание между попытками (сек) / Wait time between retries (sec) [cite: 34]
+    # Включать отправку уведомлений в Telegram. По умолчанию включено.
+    SendTelegram = $false
 
-    # Глобальные исключения / Global exclusions
+    # Дополнительные опции
+    # ArchiveCompression - включить сжатие архивных папок (ZIP)
+    ArchiveCompression = $true
+    # ArchiveKeepOriginal - если $true, не удалять исходные папки после сжатия
+    ArchiveKeepOriginal = $false
+    # LogLevel - 'Debug'|'Info'|'Warning'|'Error'
+    LogLevel = 'Info'
+
+    # Глобальные параметры Robocopy которые применятся по умолчанию ко всем задачам. 
+    # Параметры можно переопределить в каждой задаче отдельно
+    EnableSEC         = $true   # Включить сохранение атрибутов безопасности NTFS
+    EnableMIR         = $true   # Включить зеркалирование (MIR)
+    MultiThread       = 64      # Количество потоков
+    MaxRetries        = 5       # Максимальное количество повторных попыток при ошибках
+    WaitTime          = 5       # Время ожидания между повторными попытками (в секундах)
+
+    # Глобальные исключения (если не заданы в задаче)
     GlobalExcludedFiles = @("Thumbs.db", "~*.*", "*.tmp", "*.log", ".DS_Store", "desktop.ini")
     GlobalExcludedDirs  = @("Cache", "Temp")
 
-    # ==========================================================
-    # МАССИВ ЗАДАЧ / TASKS ARRAY
-    # ==========================================================
+    # Если хотите хранить секреты в переменных окружения, замените BOT_TOKEN на $env:SYNC_BOT_TOKEN
+    # Пример: BOT_TOKEN = $env:SYNC_BOT_TOKEN
+
+    # ==================================
+    # МАССИВ ЗАДАЧ
+    # ==================================
     Tasks = @(
+        # Пример шаблона задачи (раскомментируйте и адаптируйте при необходимости)
+        #@{
+        #    Name        = "template"
+        #    Enabled     = $true                # можно временно отключить задачу
+        #    Source      = '\\path\to\source'
+        #    Destination = 'C:\tmp\dest'
+        #    LogName     = 'Bckp_template'
+        #    MultiThread = 8                    # переопределяет глобальный MultiThread
+        #    MaxRetries  = 3
+        #    WaitTime    = 5
+        #    ExcludedFiles = @('*.tmp')
+        #}
         @{
-            [cite_start]Name          = "Бэкап Файлопомойки / FileShare Backup" [cite: 35]
-            Source        = '\\fileserver\share\subfolder'
-            Destination   = 'd:\archive\FileShare'
+            Name          = "fileshare"
+            #Enabled       = $false
+            Source        = '\\s-fs03\Файловое хранилище\Отделы\Отдел информационных технологий\DISTR\qtronix'
+            Destination   = 'C:\tmp\FileShare'
             LogName       = "Bckp_FileShare"
-            # Возьмет GlobalExcludedFiles / Will use GlobalExcludedFiles
-            [cite_start]EnableSEC     = $false [cite: 36]
+            # Здесь НЕТ ExcludedFiles, значит возьмет GlobalExcludedFiles
+            EnableSEC     = $false
         },
         @{
-            Name          = "Бэкап Скуля / SQL Backup"
-            Source        = '\\sqlsrv\backup_sql\full'
+            Name          = "SQL"
+            Source        = '\\s-fs03\Файловое хранилище\Отделы\Отдел информационных технологий\DISTR\DRV'
             Destination   = 'C:\tmp\SQL_Backup'
             LogName       = "Bckp_SQL"
-  
-            # [cite_start]Переопределяем параметры для этой задачи / Overriding parameters for this task [cite: 37]
             EnableSEC     = $false
             MultiThread   = 8
             ExcludedFiles = @("*.old", "temp_invoice.pdf") 
-            #ExcludedDirs  = @("Recycle Bin")
+            
         }
     )
 }
