@@ -256,7 +256,15 @@ if ($RequestedTaskNames) {
     }
     $TasksToProcess = $MatchedTasks
 } else {
-    $TasksToProcess = $Config.Tasks
+    # При запуске без параметра выполняем только включённые задачи
+    $EnabledTasks = $Config.Tasks | Where-Object { $_.Enabled -ne $false }
+    $DisabledTasks = $Config.Tasks | Where-Object { $_.Enabled -eq $false }
+    if ($DisabledTasks.Count -gt 0) {
+        $names = $DisabledTasks | ForEach-Object { $_.Name }
+        "$(Get-Date -Format G) [INFO] Пропускаются отключённые задачи (Enabled = `$false): $($names -join ', ')" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
+        Write-Host "$(Get-Date -Format G) [INFO] Пропускаются отключённые задачи: $($names -join ', ')"
+    }
+    $TasksToProcess = $EnabledTasks
 }
 
 foreach ($Task in $TasksToProcess) {
