@@ -1,5 +1,7 @@
 # PS-MultiSync-Backup 🚀
 
+> 🇷🇺 **Russian version of this documentation is available [here](README.ru.md).**
+
 An automation script for mirroring file storages and databases based on **PowerShell** and **Robocopy**. Designed specifically for enterprise IT infrastructure.
 
 ## ✨ Key Features
@@ -91,5 +93,3 @@ An automation script for mirroring file storages and databases based on **PowerS
   ```
 
   ---
-
-  If you want, I can also update `config.psd1.example` and `README.ru.md` with the same notes.

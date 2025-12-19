@@ -67,5 +67,3 @@ cp config.psd1.example config.psd1
 # Выполнить конкретные задачи (выполняются даже если Enabled = $false)
 .\sync_share.ps1 -TaskName "SQL,fileshare"
 ```
-
-Если нужно, могу обновить `config.psd1.example` и добавить аналогичное описание в README на английском/русском в одном коммите.
