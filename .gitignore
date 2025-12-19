@@ -1,8 +1,8 @@
-# Секреты
+# Secrets 
 config.psd1
-# Логи и временные файлы
+# logs & temp files
 *.txt
 Archive/
 *.log
-# Файл ToDO
+# todo files
 todo*
