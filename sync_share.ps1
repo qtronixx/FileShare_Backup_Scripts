@@ -23,6 +23,15 @@ if (-not (Test-Path $ConfigFilePath)) {
 
 $Config = Import-PowerShellDataFile -Path $ConfigFilePath
 
+# -----------------------------
+# Проверка/нормализация конфигурации
+# -----------------------------
+# Приведём некоторые значения к ожидаемому виду и проверим обязательные поля позже (лог будет создан ниже)
+if ($null -eq $Config) {
+    Write-Error "Критическая ошибка: не удалось загрузить конфигурацию из $ConfigFilePath"
+    exit 1
+}
+
 # =====================================================================
 # ИНИЦИАЛИЗАЦИЯ ПЕРЕМЕННЫХ
 # =====================================================================
@@ -33,6 +42,88 @@ if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -Type Directory | Out-Nul
 # Главный лог скрипта в корне $LogDir
 $MainLogFile = Join-Path $LogDir "sync_share_$((Get-Date).ToString('dd-MM-yyyy_HH-mm')).txt"
 "$(Get-Date -Format G) [ИНФО] --- START sync_share ---" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
+
+# -----------------------------
+# Конфигурационная валидация и приведение значений
+# -----------------------------
+# Поддержка переменной окружения для токена (если задана)
+if ($env:SYNC_BOT_TOKEN) {
+    $Config.BOT_TOKEN = $env:SYNC_BOT_TOKEN
+    $TelegramAPI = "https://api.telegram.org/bot$($Config.BOT_TOKEN)/sendMessage"
+    "$(Get-Date -Format G) [ИНФО] BOT_TOKEN взят из переменной окружения SYNC_BOT_TOKEN" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
+}
+
+# Проверяем наличие основных полей
+if (-not $Config.Tasks -or $Config.Tasks.Count -eq 0) {
+    "$(Get-Date -Format G) [ОШИБКА] В конфигурации отсутствуют задачи (Tasks)" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
+    Write-Error "В конфигурации отсутствуют задачи (Tasks)"
+    exit 1
+}
+
+# Проверка уникальности Name и LogName
+$names = $Config.Tasks | ForEach-Object { $_.Name }
+$lognames = $Config.Tasks | ForEach-Object { $_.LogName }
+if ($names.Count -ne ($names | Select-Object -Unique).Count) {
+    "$(Get-Date -Format G) [ОШИБКА] Обнаружены дублирующиеся значения Task.Name в конфиге" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
+    Write-Error 'Duplicate task Name values found in config.Tasks'
+    exit 1
+}
+if ($lognames.Count -ne ($lognames | Select-Object -Unique).Count) {
+    "$(Get-Date -Format G) [ОШИБКА] Обнаружены дублирующиеся значения Task.LogName в конфиге" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
+    Write-Error 'Duplicate task LogName values found in config.Tasks'
+    exit 1
+}
+
+# Ensure LogDirectory exists and is writable
+try {
+    if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }
+    "$([System.IO.Path]::GetFullPath($LogDir))" | Out-Null
+}
+catch {
+    "$(Get-Date -Format G) [ОШИБКА] Невозможно создать/доступ к LogDirectory: $LogDir : $_" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
+    Write-Error "Cannot access LogDirectory: $LogDir"
+    exit 1
+}
+
+# Приведение глобальных числовых настроек и ограничения
+if (-not $Config.MultiThread) { $Config.MultiThread = 8 }
+$Config.MultiThread = [int]$Config.MultiThread
+if ($Config.MultiThread -lt 1) { $Config.MultiThread = 1 }
+if ($Config.MultiThread -gt 128) { $Config.MultiThread = 128 }
+
+if (-not $Config.MaxRetries) { $Config.MaxRetries = 5 }
+$Config.MaxRetries = [int]$Config.MaxRetries
+if ($Config.MaxRetries -lt 0) { $Config.MaxRetries = 0 }
+
+if (-not $Config.WaitTime) { $Config.WaitTime = 5 }
+$Config.WaitTime = [int]$Config.WaitTime
+if ($Config.WaitTime -lt 0) { $Config.WaitTime = 0 }
+
+# Установим значения по умолчанию для опциональных флагов, если они отсутствуют
+if ($null -eq $Config.ArchiveCompression) { $Config.ArchiveCompression = $true }
+if ($null -eq $Config.ArchiveKeepOriginal) { $Config.ArchiveKeepOriginal = $false }
+if (-not $Config.LogLevel) { $Config.LogLevel = 'Info' }
+
+# Флаг включения отправки уведомлений (по-умолчанию true)
+if ($null -eq $Config.SendTelegram) { $Config.SendTelegram = $true }
+$SendTelegram = [bool]$Config.SendTelegram
+
+# Нормализуем задачи: проверим обязательные поля и подставим defaults
+foreach ($t in $Config.Tasks) {
+    if (-not $t.Name -or -not $t.Source -or -not $t.Destination -or -not $t.LogName) {
+        "$(Get-Date -Format G) [ОШИБКА] Неверный блок задачи (отсутствует Name/Source/Destination/LogName): $($t | Out-String)" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
+        Write-Error "Task missing required fields (Name/Source/Destination/LogName)"
+        exit 1
+    }
+    if ($null -eq $t.Enabled) { $t.Enabled = $true }
+    if (-not $t.MultiThread) { $t.MultiThread = $Config.MultiThread }
+    if (-not $t.MaxRetries) { $t.MaxRetries = $Config.MaxRetries }
+    if (-not $t.WaitTime) { $t.WaitTime = $Config.WaitTime }
+    # приведение типов
+    $t.MultiThread = [int]$t.MultiThread
+    if ($t.MultiThread -lt 1) { $t.MultiThread = 1 }
+    if ($t.MultiThread -gt 128) { $t.MultiThread = 128 }
+}
 
 $NonCriticalExitCodes = @(0,1,2,3,4,5,6,7,8,9,10,11)
 
@@ -50,6 +141,11 @@ function Get-TaskParam {
 # Функция отправки уведомления
 Function Send-TelegramNotification {
     Param ( [string]$Message )
+    if (-not $SendTelegram) {
+        # Telegram отключён — логируем в главный лог и не выполняем HTTP-запрос
+        "$(Get-Date -Format G) [INFO] Telegram disabled; message suppressed: $Message" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
+        return
+    }
     $Params = @{
         chat_id = $Config.CHAT_ID
         text = $Message
@@ -62,9 +158,9 @@ Function Send-TelegramNotification {
         Write-Host "Ошибка отправки в Telegram: $_" 
         # Если LogFile уже определен в цикле, пишем ошибку туда
         if ($LogFile) {
-            "$(Get-Date -Format G) [ОШИБКА TELEGRAM] $_" | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+            "$(Get-Date -Format G) [ОШИБКА TELEGRAM] $($_.ToString())" | Out-File -FilePath $LogFile -Encoding UTF8 -Append
         } elseif ($MainLogFile) {
-            "$(Get-Date -Format G) [ОШИБКА TELEGRAM] $_" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
+            "$(Get-Date -Format G) [ОШИБКА TELEGRAM] $($_.ToString())" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
         }
     }
 }
@@ -114,7 +210,7 @@ if ($OldLogs) {
             "$(Get-Date -Format G) [ИНФО] Удалена исходная папка после архивации: $monthDir" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
         }
         catch {
-            "$(Get-Date -Format G) [ОШИБКА] Ошибка при архивации $monthDir: $_" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
+            "$(Get-Date -Format G) [ОШИБКА] Ошибка при архивации ${monthDir}: $($_.ToString())" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
         }
     }
 }
