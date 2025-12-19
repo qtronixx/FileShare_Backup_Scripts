@@ -7,6 +7,10 @@
   Автор: Qtronix (Dmitry V Orlov)
 #>
 
+param(
+        [string]$TaskName
+)
+
 # =====================================================================
 # ИМПОРТ НАСТРОЕК
 # =====================================================================
@@ -81,7 +85,33 @@ if ($OldLogs) {
 # --- ОСНОВНОЙ ЦИКЛ ОБРАБОТКИ ЗАДАЧ ---
 # =====================================================================
 
-foreach ($Task in $Config.Tasks) {
+# Если передан параметр -TaskName, разбираем список целевых имён
+if ($TaskName) {
+    $RequestedTaskNames = $TaskName -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+    Write-Host "$(Get-Date -Format G) [INFO] Выполняю только задачи: $($RequestedTaskNames -join ', ')"
+} else {
+    $RequestedTaskNames = $null
+}
+
+# Сформируем список задач для обработки и проверим совпадения
+if ($RequestedTaskNames) {
+    $MatchedTasks = @()
+    foreach ($n in $RequestedTaskNames) {
+        $m = $Config.Tasks | Where-Object { $_.Name -ieq $n }
+        if ($m) { $MatchedTasks += $m }
+    }
+    if ($MatchedTasks.Count -eq 0) {
+        Write-Error "Критическая ошибка: ни одна задача не найдена по имени(нам): $($RequestedTaskNames -join ', ')"
+        $Available = $Config.Tasks | ForEach-Object { $_.Name }
+        Write-Host "Доступные задачи: $($Available -join ', ')"
+        exit 2
+    }
+    $TasksToProcess = $MatchedTasks
+} else {
+    $TasksToProcess = $Config.Tasks
+}
+
+foreach ($Task in $TasksToProcess) {
     $TaskStartTime = Get-Date
     $LogFile = Join-Path $LogDir "$($Task.LogName)_$($TaskStartTime.ToString('dd-MM-yyyy_HH-mm')).txt"
 
