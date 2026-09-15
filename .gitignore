@@ -1,8 +1,0 @@
-# Secrets 
-config.psd1
-# logs & temp files
-*.txt
-Archive/
-*.log
-# todo files
-todo*
