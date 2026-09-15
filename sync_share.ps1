@@ -1,331 +1,207 @@
-﻿<#
+<#
 .SYNOPSIS
-  Многозадачный скрипт зеркалирования на базе Robocopy с иерархией настроек и уведомлениями в Telegram.
-  передача параметра из командной строки, для выполнения конкретной задачи из массива Tasks.
+  Скрипт резервного копирования и одностороннего зеркалирования сетевой файловой шары на локальный диск, использующий многопоточность и гибкую систему оповещения Telegram.
+ 
+.DESCRIPTION
+  Этот скрипт выполняет одностороннее **зеркалирование** (`/MIR`) сетевого ресурса, указанного в `$SOURCE`, на локальный диск `$DESTINATION`. Скрипт настроен на работу с резервным копированием, включая копирование прав безопасности (`/SEC`) и атрибутов (`/COPY:DATS`).
+
+  **Оптимизация и устойчивость:**
+  - **Многопоточность:** Используется `/MT:64` для ускорения синхронизации и максимальной утилизации канала.
+  - **Устойчивость:** При сбоях копирования выполняются **5 повторных попыток** (`/R:5`) с интервалом в **5 секунд** (`/W:5`), чтобы преодолеть временные блокировки.
+  - **Исключения:** Настроены списки для игнорирования временных, системных файлов и каталогов (`/XF`, `/XD`, `/XJ`).
+
+  **Продвинутая обработка ошибок:**
+  - Скрипт не полагается только на код завершения Robocopy (`$LASTEXITCODE`), который является суммой битовых флагов.
+  - Он использует настраиваемые списки: `$NonCriticalExitCodes` и `$CriticalErrorHexCodes` для точного определения критичности сбоя.
+  - Если код завершения находится в списке некритических, но в логе обнаруживаются **заданные HEX-коды критических ошибок Win32** (например, Отказано в доступе), статус задачи повышается до **"ВНИМАНИЕ"**.
+
+  **Оповещение:** При запуске, успешном завершении, предупреждении или критическом сбое отправляется подробное уведомление в Telegram.
+
+.PARAMETER LogFile
+  Автоматически сгенерированный путь к файлу лога. Используется для записи всего вывода Robocopy, а также информации о начале, завершении и ошибках скрипта. Лог-файл необходим для анализа HEX-кодов ошибок Robocopy.
+ 
 .NOTES
-  Версия: 1.1.0 (dev) (Multi-Task Inheritance)
-  Автор: Qtronix (Dmitry V Orlov)
+  Версия: 1.6
+  Автор: Dmitry V Orlov
+  Дата: 09.12.2025
+  Требования: Запуск под доменной сервисной учетной записью с правами чтения всей файловой шары.
+  Изменения:
+    - Добавлена гибкая система определения критических ошибок через $NonCriticalExitCodes.
+    - Добавлен опциональный анализ лога на наличие критических паттернов ($CriticalErrorPatterns).
+  
+  **Параметры Robocopy в действии:**
+  - `/MIR /SEC`: Зеркалирование с сохранением разрешений.
+  - `/MT:64`: Многопоточность (64 потока).
+  - `/R:5 /W:5`: 5 повторов, 5 секунд ожидания.
+  - `/NP /XA:SH /XJ /NFL /NDL /NS`: Подавление вывода статуса и исключение служебных файлов/точек соединения.
+
+  **Логика оповещения:**
+  - **УСПЕХ:** Код возврата находится в `$NonCriticalExitCodes` И в логе **не** найдены `$CriticalErrorHexCodes`.
+  - **ВНИМАНИЕ:** Код возврата находится в `$NonCriticalExitCodes`, но в логе **найдены** `$CriticalErrorHexCodes`.
+  - **КРИТИЧЕСКИЙ СБОЙ:** Код возврата **не** находится в `$NonCriticalExitCodes` (обычно 16 и выше).
+ 
+.EXAMPLE
+  Get-Help .\sync_share.ps1 -Full 
+  # Показать полную справку по скрипту.
+  
+.EXAMPLE
+  .\sync_share.ps1 
+  # Запустить скрипт с заданными в коде параметрами $SOURCE и $DESTINATION.
+
+.LINK
+  https://docs.microsoft.com/en-us/windows-server/administration/windows-commands/robocopy 
+  # Ссылка на документацию Robocopy.
 #>
 
-param(
-        [string]$TaskName
+# Настройки Telegram API
+$BOT_TOKEN = "7793252318:AAETjVuHuLIQCDOx1qApdXEKtL_8pfkk5To"
+$CHAT_ID = "-1002510290959"
+$MESSAGE_THREAD_ID = "19"
+$TelegramAPI = "https://api.telegram.org/bot$BOT_TOKEN/sendMessage"
+
+# Настройки источника и приемника
+$SOURCE = "\\s-fs03\Файловое хранилище"
+$DESTINATION = "D:\Bckp\File_Share"
+
+# НАСТРОЙКА ИСКЛЮЧЕНИЙ: Добавляйте или удаляйте шаблоны здесь
+$ExcludedFiles = @(
+    "Thumbs.db",           # Кэш эскизов Windows
+    "~*.*",                # Временные файлы (например, ~$Document.docx)
+    "~$*",                 # Ловит ~$Document.xlsx (дополнительный шаблон!)
+    "*.tmp",               # Временные файлы
+    ".DS_Store",           # Служебный файл macOS
+    "desktop.ini",         # Настройки папки Windows
+    "*.log",               # Файлы логов (если не нужны в бэкапе)
+    "*.crdownload"         # Недоскачанные файлы из браузера
 )
 
-# =====================================================================
-# ИМПОРТ НАСТРОЕК
-# =====================================================================
-$ConfigFilePath = Join-Path (Split-Path $MyInvocation.MyCommand.Path) "config.psd1"
+$ExcludedDirs = @(
+    "*\Cache",
+    "*\Temp"
+)
 
-if (-not (Test-Path $ConfigFilePath)) {
-    Write-Error "Критическая ошибка: Файл конфигурации $ConfigFilePath не найден!"
-    exit 1
-}
+# Коды возврата Robocopy, которые НЕ считаются критическими ошибками.
+# Robocopy возвращает сумму битовых флагов. Коды < 8 обычно не критичны.
+# Код 8 (некоторые файлы не скопированы) часто включает ERROR 33, поэтому добавлен по умолчанию.
+# Код 16 и выше - серьёзные ошибки.
+$NonCriticalExitCodes = @(0,1,2,3,4,5,6,7,8,9,10,11) # Добавляйте или удаляйте коды здесь
 
-$Config = Import-PowerShellDataFile -Path $ConfigFilePath
+# HEX-коды ошибок Windows в логе, которые считаются КРИТИЧЕСКИМИ.
+# Ищем шестнадцатеричный код в скобках, например: (0x00000005)
+# 0x00000005 = ERROR_ACCESS_DENIED (Отказано в доступе)
+# 0x00000020 = ERROR_SHARING_VIOLATION (Файл занят другим процессом)
+$CriticalErrorHexCodes = @(
+    "0x00000005", # Отказ в доступе
+    "0x00000020"  # Нарушение общего доступа (файл занят) не забудьте запятые
+    #"0x00000021" # Нарушение блокировки (часть файла заблокирована) - обычно не критично
+    # Добавляйте другие HEX-коды здесь
+)
 
-# -----------------------------
-# Проверка/нормализация конфигурации
-# -----------------------------
-# Приведём некоторые значения к ожидаемому виду и проверим обязательные поля позже (лог будет создан ниже)
-if ($null -eq $Config) {
-    Write-Error "Критическая ошибка: не удалось загрузить конфигурацию из $ConfigFilePath"
-    exit 1
-}
-
-# =====================================================================
-# ИНИЦИАЛИЗАЦИЯ ПЕРЕМЕННЫХ
-# =====================================================================
-$TelegramAPI = "https://api.telegram.org/bot$($Config.BOT_TOKEN)/sendMessage"
-$LogDir = $Config.LogDirectory
-if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -Type Directory | Out-Null }
-
-# Главный лог скрипта в корне $LogDir
-$MainLogFile = Join-Path $LogDir "sync_share_$((Get-Date).ToString('dd-MM-yyyy_HH-mm')).txt"
-"$(Get-Date -Format G) [ИНФО] --- START sync_share ---" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-
-# -----------------------------
-# Конфигурационная валидация и приведение значений
-# -----------------------------
-# Поддержка переменной окружения для токена (если задана)
-if ($env:SYNC_BOT_TOKEN) {
-    $Config.BOT_TOKEN = $env:SYNC_BOT_TOKEN
-    $TelegramAPI = "https://api.telegram.org/bot$($Config.BOT_TOKEN)/sendMessage"
-    "$(Get-Date -Format G) [ИНФО] BOT_TOKEN взят из переменной окружения SYNC_BOT_TOKEN" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-}
-
-# Проверяем наличие основных полей
-if (-not $Config.Tasks -or $Config.Tasks.Count -eq 0) {
-    "$(Get-Date -Format G) [ОШИБКА] В конфигурации отсутствуют задачи (Tasks)" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-    Write-Error "В конфигурации отсутствуют задачи (Tasks)"
-    exit 1
-}
-
-# Проверка уникальности Name и LogName
-$names = $Config.Tasks | ForEach-Object { $_.Name }
-$lognames = $Config.Tasks | ForEach-Object { $_.LogName }
-if ($names.Count -ne ($names | Select-Object -Unique).Count) {
-    "$(Get-Date -Format G) [ОШИБКА] Обнаружены дублирующиеся значения Task.Name в конфиге" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-    Write-Error 'Duplicate task Name values found in config.Tasks'
-    exit 1
-}
-if ($lognames.Count -ne ($lognames | Select-Object -Unique).Count) {
-    "$(Get-Date -Format G) [ОШИБКА] Обнаружены дублирующиеся значения Task.LogName в конфиге" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-    Write-Error 'Duplicate task LogName values found in config.Tasks'
-    exit 1
-}
-
-# Ensure LogDirectory exists and is writable
-try {
-    if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }
-    "$([System.IO.Path]::GetFullPath($LogDir))" | Out-Null
-}
-catch {
-    "$(Get-Date -Format G) [ОШИБКА] Невозможно создать/доступ к LogDirectory: $LogDir : $_" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-    Write-Error "Cannot access LogDirectory: $LogDir"
-    exit 1
-}
-
-# Приведение глобальных числовых настроек и ограничения
-if (-not $Config.MultiThread) { $Config.MultiThread = 8 }
-$Config.MultiThread = [int]$Config.MultiThread
-if ($Config.MultiThread -lt 1) { $Config.MultiThread = 1 }
-if ($Config.MultiThread -gt 128) { $Config.MultiThread = 128 }
-
-if (-not $Config.MaxRetries) { $Config.MaxRetries = 5 }
-$Config.MaxRetries = [int]$Config.MaxRetries
-if ($Config.MaxRetries -lt 0) { $Config.MaxRetries = 0 }
-
-if (-not $Config.WaitTime) { $Config.WaitTime = 5 }
-$Config.WaitTime = [int]$Config.WaitTime
-if ($Config.WaitTime -lt 0) { $Config.WaitTime = 0 }
-
-# Установим значения по умолчанию для опциональных флагов, если они отсутствуют
-if ($null -eq $Config.ArchiveCompression) { $Config.ArchiveCompression = $true }
-if ($null -eq $Config.ArchiveKeepOriginal) { $Config.ArchiveKeepOriginal = $false }
-if (-not $Config.LogLevel) { $Config.LogLevel = 'Info' }
-
-# Флаг включения отправки уведомлений (по-умолчанию true)
-if ($null -eq $Config.SendTelegram) { $Config.SendTelegram = $true }
-$SendTelegram = [bool]$Config.SendTelegram
-
-# Нормализуем задачи: проверим обязательные поля и подставим defaults
-foreach ($t in $Config.Tasks) {
-    if (-not $t.Name -or -not $t.Source -or -not $t.Destination -or -not $t.LogName) {
-        "$(Get-Date -Format G) [ОШИБКА] Неверный блок задачи (отсутствует Name/Source/Destination/LogName): $($t | Out-String)" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-        Write-Error "Task missing required fields (Name/Source/Destination/LogName)"
-        exit 1
-    }
-    if ($null -eq $t.Enabled) { $t.Enabled = $true }
-    if (-not $t.MultiThread) { $t.MultiThread = $Config.MultiThread }
-    if (-not $t.MaxRetries) { $t.MaxRetries = $Config.MaxRetries }
-    if (-not $t.WaitTime) { $t.WaitTime = $Config.WaitTime }
-    # приведение типов
-    $t.MultiThread = [int]$t.MultiThread
-    if ($t.MultiThread -lt 1) { $t.MultiThread = 1 }
-    if ($t.MultiThread -gt 128) { $t.MultiThread = 128 }
-}
-
-$NonCriticalExitCodes = @(0,1,2,3,4,5,6,7,8,9,10,11)
+# Настройки логгирования
+$LogDir = "d:\Logs\FileShare_bckp_logs"
+If (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -Type Directory | Out-Null }
+$LogFile = "$LogDir\DataShare_Sync_Log_$(Get-Date -Format dd-MM-yyyy_HH-mm).txt"
 
 # =====================================================================
-# ФУНКЦИИ
+# ФУНКЦИЯ УВЕДОМЛЕНИЯ
 # =====================================================================
-
-# Функция для выбора параметра (Приоритет: Задача -> Глобальные настройки)
-function Get-TaskParam {
-    param($TaskValue, $GlobalValue)
-    if ($null -ne $TaskValue) { return $TaskValue }
-    return $GlobalValue
-}
-
-# Функция отправки уведомления
 Function Send-TelegramNotification {
-    Param ( [string]$Message )
-    if (-not $SendTelegram) {
-        # Telegram отключён — логируем в главный лог и не выполняем HTTP-запрос
-        "$(Get-Date -Format G) [INFO] Telegram disabled; message suppressed: $Message" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-        return
-    }
+    Param ( [Parameter(Mandatory=$true)][string]$Message )
     $Params = @{
-        chat_id = $Config.CHAT_ID
+        chat_id = $CHAT_ID
         text = $Message
-        message_thread_id = $Config.MESSAGE_THREAD_ID 
+        message_thread_id = $MESSAGE_THREAD_ID 
     }
-    try { 
-        Invoke-RestMethod -Uri $TelegramAPI -Method Post -Body $Params | Out-Null 
+    try {
+        $Response = Invoke-RestMethod -Uri $TelegramAPI -Method Post -Body $Params
+        "$(Get-Date -Format G) [ИНФО] Уведомление в Telegram отправлено успешно." | Out-File -FilePath $LogFile -Encoding UTF8 -Append
     }
-    catch { 
-        Write-Host "Ошибка отправки в Telegram: $_" 
-        # Если LogFile уже определен в цикле, пишем ошибку туда
-        if ($LogFile) {
-            "$(Get-Date -Format G) [ОШИБКА TELEGRAM] $($_.ToString())" | Out-File -FilePath $LogFile -Encoding UTF8 -Append
-        } elseif ($MainLogFile) {
-            "$(Get-Date -Format G) [ОШИБКА TELEGRAM] $($_.ToString())" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-        }
-    }
-}
-
-# =====================================================================
-# 📂 РОТАЦИЯ И АРХИВИРОВАНИЕ ЛОГОВ
-# Рекурсивно переносим старые .txt в Archive/yyyy/MM, сохраняя структуру подпапок
-# =====================================================================
-Write-Host "$(Get-Date -Format G) [ИНФО] --- ЗАПУСК РОТАЦИИ ЛОГОВ ---"
-
-$ArchiveRoot = Join-Path -Path $LogDir -ChildPath "Archive"
-$Today = (Get-Date).Date 
-if (-not (Test-Path $ArchiveRoot)) { New-Item -Path $ArchiveRoot -Type Directory | Out-Null }
-
-# Находим все логи (включая в подпапках), но исключаем уже архивные
-$OldLogs = Get-ChildItem -Path $LogDir -Filter "*.txt" -Recurse -File | Where-Object { $_.LastWriteTime -lt $Today -and ($_.FullName -notlike (Join-Path $ArchiveRoot '*')) }
-# Массив для хранения уникальных месячных папок, в которые перемещались логи
-$ArchivedMonthDirs = @()
-if ($OldLogs) {
-    foreach ($Log in $OldLogs) {
-        # относительный путь файла относительно $LogDir (включая подпапки и имя файла)
-        $relativePath = $Log.FullName.Substring($LogDir.Length).TrimStart('\','/')
-        $monthSub = $Log.LastWriteTime.ToString("yyyy\\MM")
-        $destFullPath = Join-Path $ArchiveRoot (Join-Path $monthSub $relativePath)
-        $destDir = Split-Path $destFullPath -Parent
-        if (-not (Test-Path $destDir)) { New-Item -Path $destDir -ItemType Directory -Force | Out-Null }
-        Move-Item -Path $Log.FullName -Destination $destFullPath -Force
-        # добавить месячную папку в список для последующей архивации
-        $monthDirPath = Join-Path $ArchiveRoot $monthSub
-        if (-not ($ArchivedMonthDirs -contains $monthDirPath)) { $ArchivedMonthDirs += $monthDirPath }
-        "$(Get-Date -Format G) [ИНФО] Перемещён лог: $($Log.FullName) -> $destFullPath" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-    }
-
-    # Сжимаем по-месяцам и удаляем исходные папки после успешного архива
-    foreach ($monthDir in $ArchivedMonthDirs) {
-        if (-not (Test-Path $monthDir)) { continue }
-        $zipPath = "$monthDir.zip"
-        if (Test-Path $zipPath) {
-            # если уже есть zip с таким именем, создаём уникальное имя
-            $zipPath = "$monthDir_$((Get-Date).ToString('yyyyMMdd_HHmmss')).zip"
-        }
+    catch {
+        $ErrorDetails = $_.Exception.Response
+        "$(Get-Date -Format G) [ОШИБКА ОТПРАВКИ] Не удалось отправить сообщение в Telegram." | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+        "Код статуса: $($ErrorDetails.StatusCode.value__)" | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+        "Причина: $($ErrorDetails.StatusDescription)" | Out-File -FilePath $LogFile -Encoding UTF8 -Append
         try {
-            Compress-Archive -Path (Join-Path $monthDir '*') -DestinationPath $zipPath -Force
-            "$(Get-Date -Format G) [ИНФО] Упаковано: $monthDir -> $zipPath" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-            # После успешного создания архива удаляем исходную папку с файлами
-            Remove-Item -Path $monthDir -Recurse -Force
-            "$(Get-Date -Format G) [ИНФО] Удалена исходная папка после архивации: $monthDir" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-        }
-        catch {
-            "$(Get-Date -Format G) [ОШИБКА] Ошибка при архивации ${monthDir}: $($_.ToString())" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-        }
+            $Reader = New-Object System.IO.StreamReader($ErrorDetails.GetResponseStream())
+            $ErrorBody = $Reader.ReadToEnd()
+            $Reader.Close()
+            "Тело ответа Telegram: $ErrorBody" | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+        } catch { }
     }
 }
 
 # =====================================================================
-# --- ОСНОВНОЙ ЦИКЛ ОБРАБОТКИ ЗАДАЧ ---
+# ЗАПУСК ROBOCOPY
+# =====================================================================
+"$(Get-Date -Format G) [ИНФО] Запуск Robocopy..." | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+
+# Уведомление о начале
+$StartTelegramMessage = "▶️ **ЗАПУСК БЭКАПА ФАЙЛОВОЙ ШАРЫ**"
+$StartTelegramMessage += "`n*Сервер:* $env:COMPUTERNAME"
+$StartTelegramMessage += "`n*Начало:* $(Get-Date -Format G)"
+$StartTelegramMessage += "`n*Источник:* $SOURCE"
+Send-TelegramNotification -Message $StartTelegramMessage
+
+# Запуск Robocopy с параметрами
+robocopy $SOURCE $DESTINATION /MIR /SEC /MT:64 /R:5 /W:5 /NP /XA:SH /XJ /NFL /NDL /NS `
+    /XF $($ExcludedFiles -join ' ') `
+    2>&1 | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+
+# =====================================================================
+# ПРОВЕРКА РЕЗУЛЬТАТА И ОПОВЕЩЕНИЕ (ОБНОВЛЁННАЯ ЛОГИКА С ПОИСКОМ ПО HEX-КОДАМ)
 # =====================================================================
 
-# Если передан параметр -TaskName, разбираем список целевых имён
-if ($TaskName) {
-    $RequestedTaskNames = $TaskName -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
-    Write-Host "$(Get-Date -Format G) [INFO] Выполняю только задачи: $($RequestedTaskNames -join ', ')"
-} else {
-    $RequestedTaskNames = $null
-}
-
-# Сформируем список задач для обработки и проверим совпадения
-if ($RequestedTaskNames) {
-    $MatchedTasks = @()
-    $MatchedNames = @()
-    foreach ($n in $RequestedTaskNames) {
-        $m = $Config.Tasks | Where-Object { $_.Name -ieq $n }
-        if ($m) {
-            $MatchedTasks += $m
-            $MatchedNames += $m.Name
+# 1. Проверка по коду возврата (основная логика)
+if ($NonCriticalExitCodes -contains $LASTEXITCODE) {
+    # 2. Дополнительная проверка лога на критические HEX-коды ошибок
+    $LogContent = Get-Content -Path $LogFile -Raw -ErrorAction SilentlyContinue
+    $FoundCriticalHexCodes = @()
+    
+    if ($LogContent -and $CriticalErrorHexCodes) {
+        # Ищем все вхождения HEX-кодов в формате (0x........)
+        $hexPattern = "\(($($CriticalErrorHexCodes -join '|'))\)"
+        $errorMatches = [regex]::Matches($LogContent, $hexPattern)
+        foreach ($match in $errorMatches) {
+            $foundCode = $match.Groups[1].Value
+            if (-not ($FoundCriticalHexCodes -contains $foundCode)) {
+                $FoundCriticalHexCodes += $foundCode
+            }
         }
     }
-    $Missing = $RequestedTaskNames | Where-Object { $MatchedNames -notcontains $_ }
-    if ($Missing.Count -gt 0) {
-        # Если не найдено ни одной задачи — критическая ошибка
-        if ($MatchedTasks.Count -eq 0) {
-            Write-Error "Критическая ошибка: следующие запрошенные задачи не найдены: $($Missing -join ', ')"
-            $Available = $Config.Tasks | ForEach-Object { $_.Name }
-            Write-Host "Доступные задачи: $($Available -join ', ')"
-            "$(Get-Date -Format G) [ОШИБКА] Запрошенные задачи не найдены: $($Missing -join ', ')" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-            exit 2
-        }
 
-        # Частичные совпадения — предупреждение, записываем в главный лог и продолжаем с найденными задачами
-        $warnMsg = "Предупреждение: некоторые запрошенные задачи не найдены и будут пропущены: $($Missing -join ', ')"
-        Write-Warning $warnMsg
-        "$(Get-Date -Format G) [ПРЕДУПРЕЖДЕНИЕ] $warnMsg" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-    }
-    $TasksToProcess = $MatchedTasks
-} else {
-    # При запуске без параметра выполняем только включённые задачи
-    $EnabledTasks = $Config.Tasks | Where-Object { $_.Enabled -ne $false }
-    $DisabledTasks = $Config.Tasks | Where-Object { $_.Enabled -eq $false }
-    if ($DisabledTasks.Count -gt 0) {
-        $names = $DisabledTasks | ForEach-Object { $_.Name }
-        "$(Get-Date -Format G) [INFO] Пропускаются отключённые задачи (Enabled = `$false): $($names -join ', ')" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-        Write-Host "$(Get-Date -Format G) [INFO] Пропускаются отключённые задачи: $($names -join ', ')"
-    }
-    $TasksToProcess = $EnabledTasks
-}
-
-foreach ($Task in $TasksToProcess) {
-    $TaskStartTime = Get-Date
-    # Логи каждой задачи в подпапке с именем задачи + суффикс _log
-    $TaskLogDir = Join-Path $LogDir ("$($Task.Name)_log")
-    if (-not (Test-Path $TaskLogDir)) { New-Item -Path $TaskLogDir -Type Directory | Out-Null }
-    $LogFile = Join-Path $TaskLogDir "$($Task.LogName)_$($TaskStartTime.ToString('dd-MM-yyyy_HH-mm')).txt"
-    # Запись старта задачи в главный лог
-    "$(Get-Date -Format G) [START TASK] $($Task.Name) Log: $LogFile" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-
-    # 1. Сбор параметров (Наследование)
-    $currentSEC = Get-TaskParam $Task.EnableSEC $Config.EnableSEC
-    $currentMIR = Get-TaskParam $Task.EnableMIR $Config.EnableMIR
-    $currentMT  = Get-TaskParam $Task.MultiThread $Config.MultiThread
-    $currentR   = Get-TaskParam $Task.MaxRetries $Config.MaxRetries
-    $currentW   = Get-TaskParam $Task.WaitTime $Config.WaitTime
-    $currentXF  = Get-TaskParam $Task.ExcludedFiles $Config.GlobalExcludedFiles
-    $currentXD  = Get-TaskParam $Task.ExcludedDirs $Config.GlobalExcludedDirs
-
-    "--- ЗАПУСК ЗАДАЧИ: $($Task.Name) ---" | Out-File $LogFile -Encoding UTF8 -Append
-    "Источник: $($Task.Source)" | Out-File $LogFile -Encoding UTF8 -Append
-
-    # 2. Уведомление
-    Send-TelegramNotification "▶️ **СТАРТ: $($Task.Name)**`n🖥 Сервер: $env:COMPUTERNAME`n📂 Из: $($Task.Source)"
-
-    # 3. Формирование Robocopy Params
-    $RoboParams = @($Task.Source, $Task.Destination, "/NP", "/XA:SH", "/XJ", "/NFL", "/NDL", "/NS")
-    if ($currentMIR) { $RoboParams += "/MIR" }
-    if ($currentSEC) { $RoboParams += "/SEC" }
-    $RoboParams += "/MT:$currentMT"
-    $RoboParams += "/R:$currentR"
-    $RoboParams += "/W:$currentW"
-    if ($currentXF) { $RoboParams += "/XF"; $RoboParams += $currentXF }
-    if ($currentXD) { $RoboParams += "/XD"; $RoboParams += $currentXD }
-
-    # 4. Запуск
-    "$(Get-Date -Format G) [ИНФО] Команда: robocopy $($RoboParams -join ' ')" | Out-File $LogFile -Encoding UTF8 -Append
-    & robocopy @RoboParams 2>&1 | Out-File $LogFile -Encoding UTF8 -Append
-    $ExitCode = $LASTEXITCODE
-
-    # 5. Анализ лога
-    $CriticalHexCodes = @("0x00000005", "0x00000020")
-    $LogContent = Get-Content $LogFile -Raw
-    $FoundErrors = @()
-    foreach ($Hex in $CriticalHexCodes) {
-        if ($LogContent -match [regex]::Escape("($Hex)")) { $FoundErrors += $Hex }
-    }
-
-    # 6. Итоги
-    if ($ExitCode -lt 8 -and $FoundErrors.Count -eq 0) {
-        Send-TelegramNotification "✅ **УСПЕХ: $($Task.Name)**`nКод: $ExitCode"
-        $taskStatus = "SUCCESS"
-    } elseif ($FoundErrors.Count -gt 0) {
-        Send-TelegramNotification "⚠️ **ВНИМАНИЕ: $($Task.Name)**`nОшибки: $($FoundErrors -join ', ')`nКод: $ExitCode"
-        $taskStatus = "WARNING: $($FoundErrors -join ', ')"
+    if ($FoundCriticalHexCodes.Count -gt 0) {
+        # В логе найдены критические ошибки, хотя код возврата некритический
+        $WarningMessage = "⚠️ **ВНИМАНИЕ: Некритический код возврата, но в логе найдены ошибки**"
+        $WarningMessage += "`n*Сервер:* $env:COMPUTERNAME"
+        $WarningMessage += "`n*Код Robocopy:* $LASTEXITCODE"
+        $WarningMessage += "`n*Найденные HEX-коды ошибок:* " + ($FoundCriticalHexCodes -join ", ")
+        $WarningMessage += "`n*Лог-файл:* $LogFile"
+        Send-TelegramNotification -Message $WarningMessage
+        "$(Get-Date -Format G) [ВНИМАНИЕ] Robocopy завершён с кодом $LASTEXITCODE, но в логе обнаружены критические ошибки: $($FoundCriticalHexCodes -join ', ')." | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+        exit 0 # Или exit 1, если хотите считать это критическим
     } else {
-        Send-TelegramNotification "🚨 **КРИТИЧЕСКИЙ СБОЙ: $($Task.Name)**`nКод: $ExitCode"
-        $taskStatus = "CRITICAL"
+        # Всё действительно в порядке
+        "$(Get-Date -Format G) [УСПЕХ] Robocopy завершён без критических ошибок (Код $LASTEXITCODE)." | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+        # Отправляем уведомление об успешном завершении
+        $SuccessTelegramMessage = "✅ **БЭКАП УСПЕШНО ЗАВЕРШЁН**"
+        $SuccessTelegramMessage += "`n*Сервер:* $env:COMPUTERNAME"
+        $SuccessTelegramMessage += "`n*Код Robocopy:* $LASTEXITCODE"
+        $SuccessTelegramMessage += "`n*Лог-файл:* $LogFile"
+        Send-TelegramNotification -Message $SuccessTelegramMessage
+        exit 0
     }
-    # Логируем завершение в главный лог
-    "$(Get-Date -Format G) [END TASK] $($Task.Name) Status: $taskStatus ExitCode: $ExitCode" | Out-File -FilePath $MainLogFile -Encoding UTF8 -Append
-    "--- ЗАВЕРШЕНИЕ ЗАДАЧИ: $($Task.Name) ---`n" | Out-File $LogFile -Encoding UTF8 -Append
+} else {
+    # КРИТИЧЕСКАЯ ОШИБКА (кода нет в списке некритических)
+    $ErrorLogEntry = "$(Get-Date -Format G) [КРИТИЧЕСКАЯ ОШИБКА] Robocopy завершился с критическим кодом $LASTEXITCODE! Проверьте лог."
+    $ErrorLogEntry | Out-File -FilePath $LogFile -Encoding UTF8 -Append
+    
+    $TelegramMessage = "🚨 **КРИТИЧЕСКИЙ СБОЙ БЭКАПА!**"
+    $TelegramMessage += "`n*Сервер:* $env:COMPUTERNAME"
+    $TelegramMessage += "`n*Задача:* Файловая Шара"
+    $TelegramMessage += "`n*Код Robocopy:* $LASTEXITCODE"
+    $TelegramMessage += "`n*Лог-файл:* $LogFile"
+    $TelegramMessage += "`n`nСрочно проверьте доступ к $SOURCE."
+    
+    Send-TelegramNotification -Message $TelegramMessage
+    exit 1
 }
