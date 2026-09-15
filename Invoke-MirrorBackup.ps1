@@ -27,7 +27,11 @@
   Запускает Robocopy с флагом /L — ничего не меняет, только показывает, что было бы сделано.
 
 .NOTES
-  Версия: 4.0
+  Версия: 4.1
+  Изменения по сравнению с 4.0:
+    - Добавлена поддержка прокси для отправки в Telegram (ProxyUrl / ProxyUseDefaultCredentials).
+    - Добавлена возможность полностью отключить отправку в Telegram (SendTelegram = $false) —
+      сообщения в этом случае просто пишутся в лог задачи вместо отправки.
   Изменения по сравнению с 3.0:
     - Настройки разложены на common.psd1 (общее для всех задач) + конфиг задачи
       (специфичное для конкретной задачи), со слиянием и переопределением полей задачей.
@@ -59,6 +63,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# На части Windows Server / PowerShell 5.1 .NET по умолчанию не включает TLS 1.2 в
+# список протоколов ServicePointManager, из-за чего HTTPS-запрос к серверам, требующим
+# TLS 1.2+ (в т.ч. api.telegram.org), не получает явный отказ, а зависает до таймаута.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
 #region ===================== КОНФИГУРАЦИЯ =====================
 
 function Import-Psd1Safe {
@@ -83,6 +92,9 @@ $Defaults = @{
     ExcludedDirs                 = @()
     CopyAcls                     = $false
     MessageThreadId              = $null
+    SendTelegram                 = $true
+    ProxyUrl                     = $null
+    ProxyUseDefaultCredentials   = $false
 }
 
 $Common = Import-Psd1Safe -Path $CommonConfigPath -What "Общий конфиг"
@@ -117,6 +129,9 @@ $NonCriticalExitCodes         = $Config.NonCriticalExitCodes
 $CriticalErrorHexCodes        = $Config.CriticalErrorHexCodes
 $TreatCopiedFailuresAsWarning = [bool]$Config.TreatCopiedFailuresAsWarning
 $MinFreeSpaceGB   = $Config.MinFreeSpaceGB
+$SendTelegram     = [bool]$Config.SendTelegram
+$ProxyUrl         = $Config.ProxyUrl
+$ProxyUseDefaultCredentials = [bool]$Config.ProxyUseDefaultCredentials
 
 #endregion
 
@@ -149,6 +164,12 @@ function Send-TelegramNotification {
         [Parameter(Mandatory = $true)][string]$Message,
         [int]$MaxAttempts = 3
     )
+
+    if (-not $SendTelegram) {
+        Write-Log "Отправка в Telegram отключена (SendTelegram = `$false). Сообщение: $Message" "ИНФО"
+        return
+    }
+
     if (-not $BOT_TOKEN) {
         Write-Log "Токен Telegram не задан (common.psd1 / $ConfigPath)." "ОШИБКА"
         return
@@ -162,9 +183,22 @@ function Send-TelegramNotification {
     }
     if ($MESSAGE_THREAD_ID) { $body.message_thread_id = $MESSAGE_THREAD_ID }
 
+    $restParams = @{
+        Uri        = $uri
+        Method     = 'Post'
+        Body       = $body
+        TimeoutSec = 15
+    }
+    if ($ProxyUrl) {
+        $restParams.Proxy = $ProxyUrl
+        if ($ProxyUseDefaultCredentials) {
+            $restParams.ProxyUseDefaultCredentials = $true
+        }
+    }
+
     for ($i = 1; $i -le $MaxAttempts; $i++) {
         try {
-            Invoke-RestMethod -Uri $uri -Method Post -Body $body -TimeoutSec 15 | Out-Null
+            Invoke-RestMethod @restParams | Out-Null
             Write-Log "Уведомление в Telegram отправлено успешно (попытка $i)."
             return
         } catch {

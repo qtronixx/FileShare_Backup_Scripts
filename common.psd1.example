@@ -6,6 +6,15 @@
     ChatId          = '-1000000000000'
     MessageThreadId = '1'           # можно перекрыть в конфиге задачи своим топиком
 
+    # SendTelegram = $false полностью отключает отправку — сообщения пишутся в лог
+    # задачи вместо реальной отправки. Можно переопределить в конфиге конкретной задачи.
+    SendTelegram = $true
+
+    # Прокси для запросов к api.telegram.org, если сервер не имеет прямого выхода в
+    # интернет. ProxyUrl = $null — прокси не используется.
+    ProxyUrl                   = $null   # например: 'http://proxy.corp.local:3128'
+    ProxyUseDefaultCredentials = $false
+
     # --- Robocopy по умолчанию ---
     Threads = 64
 
