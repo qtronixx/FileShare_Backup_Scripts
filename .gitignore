@@ -1,0 +1,12 @@
+# Реальный конфиг с токеном Telegram — коммитится только common.psd1.example
+common.psd1
+
+# Логи
+*.log
+*.txt
+logs/
+
+# Мусор редакторов/ОС
+.vscode/
+Thumbs.db
+.DS_Store
