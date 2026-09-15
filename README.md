@@ -1,5 +1,7 @@
 # Invoke-MirrorBackup
 
+> 🇷🇺 **Russian version of this documentation is available [here](README.ru.md).**
+
 Backup/one-way mirroring script (Robocopy) with flexible error classification and Telegram notifications. A single script serves an arbitrary number of independent tasks (file shares, directories with DB dumps, etc.) — task settings are defined in a separate config, without changing the code.
 
 ## Features
