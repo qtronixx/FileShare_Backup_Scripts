@@ -1,0 +1,315 @@
+<#
+.SYNOPSIS
+  Единый скрипт зеркалирования (Robocopy) для нескольких задач бэкапа, настройки которых
+  собираются из общего конфига (common.psd1) и конфига конкретной задачи (tasks\*.psd1).
+
+.DESCRIPTION
+  Настройки собираются в порядке возрастания приоритета: встроенные значения по умолчанию
+  -> common.psd1 (общие для всех задач: Telegram, коды ошибок, ретеншн логов) -> конфиг
+  задачи из -ConfigPath (Source/Destination/исключения, и любые точечные переопределения
+  общих настроек, например свой MessageThreadId).
+
+  Пример структуры:
+    C:\Scripts\
+    ├── Invoke-MirrorBackup.ps1
+    ├── common.psd1
+    └── tasks\
+        ├── share01.psd1
+        └── sql01.psd1
+
+.PARAMETER ConfigPath
+  Путь к .psd1-файлу конкретной задачи. Обязателен.
+
+.PARAMETER CommonConfigPath
+  Путь к общему .psd1. По умолчанию — common.psd1 рядом со скриптом.
+
+.PARAMETER DryRun
+  Запускает Robocopy с флагом /L — ничего не меняет, только показывает, что было бы сделано.
+
+.NOTES
+  Версия: 4.0
+  Изменения по сравнению с 3.0:
+    - Настройки разложены на common.psd1 (общее для всех задач) + конфиг задачи
+      (специфичное для конкретной задачи), со слиянием и переопределением полей задачей.
+    - CopyAcls (было PreserveSecurity) и Threads вынесены явными полями.
+    - Добавлен TreatCopiedFailuresAsWarning: код возврата Robocopy с установленным
+      битом 8 ("часть файлов не скопирована") теперь явно помечается как "ВНИМАНИЕ",
+      а не тихо засчитывается как "УСПЕХ", если в логе не нашлось HEX-кода из списка.
+    - MessageThreadId можно переопределить на уровне задачи (свой топик под SQL и т.п.).
+
+.EXAMPLE
+  .\Invoke-MirrorBackup.ps1 -ConfigPath .\tasks\share01.psd1
+
+.EXAMPLE
+  .\Invoke-MirrorBackup.ps1 -ConfigPath .\tasks\sql01.psd1 -DryRun
+
+.LINK
+  https://docs.microsoft.com/en-us/windows-server/administration/windows-commands/robocopy
+#>
+
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$ConfigPath,
+
+    [string]$CommonConfigPath = (Join-Path $PSScriptRoot "common.psd1"),
+
+    [switch]$DryRun
+)
+
+$ErrorActionPreference = 'Stop'
+
+#region ===================== КОНФИГУРАЦИЯ =====================
+
+function Import-Psd1Safe {
+    param([string]$Path, [string]$What)
+    if (-not (Test-Path $Path)) {
+        throw "$What не найден: $Path"
+    }
+    # Import-PowerShellDataFile парсит только литералы, без исполнения кода — безопасно
+    # для конфигов, которые в перспективе может редактировать не только автор скрипта.
+    Import-PowerShellDataFile -Path $Path
+}
+
+# Значения по умолчанию, если их нет ни в common.psd1, ни в конфиге задачи.
+$Defaults = @{
+    Threads                      = 32
+    NonCriticalExitCodes         = @(0,1,2,3,4,5,6,7,8,9,10,11)
+    CriticalErrorHexCodes        = @()
+    TreatCopiedFailuresAsWarning = $true
+    LogRetentionDays             = 30
+    MinFreeSpaceGB               = 10
+    ExcludedFiles                = @()
+    ExcludedDirs                 = @()
+    CopyAcls                     = $false
+    MessageThreadId              = $null
+}
+
+$Common = Import-Psd1Safe -Path $CommonConfigPath -What "Общий конфиг"
+$Task   = Import-Psd1Safe -Path $ConfigPath        -What "Конфиг задачи"
+
+# Слияние: Defaults -> Common -> Task (каждый следующий уровень перекрывает предыдущий).
+$Config = @{}
+foreach ($h in @($Defaults, $Common, $Task)) {
+    foreach ($key in $h.Keys) { $Config[$key] = $h[$key] }
+}
+
+foreach ($required in @('TaskName','Source','Destination','LogDir','LogFilePrefix','BotToken','ChatId')) {
+    if (-not $Config[$required]) {
+        throw "В конфигурации не задано обязательное поле '$required' (проверьте $CommonConfigPath и $ConfigPath)."
+    }
+}
+
+$TaskName         = $Config.TaskName
+$SOURCE           = $Config.Source
+$DESTINATION      = $Config.Destination
+$BOT_TOKEN        = $Config.BotToken
+$CHAT_ID          = $Config.ChatId
+$MESSAGE_THREAD_ID = $Config.MessageThreadId
+$LogDir           = $Config.LogDir
+$LogFilePrefix    = $Config.LogFilePrefix
+$LogRetentionDays = $Config.LogRetentionDays
+$ExcludedFiles    = $Config.ExcludedFiles
+$ExcludedDirs     = $Config.ExcludedDirs
+$CopyAcls         = [bool]$Config.CopyAcls
+$Threads          = $Config.Threads
+$NonCriticalExitCodes         = $Config.NonCriticalExitCodes
+$CriticalErrorHexCodes        = $Config.CriticalErrorHexCodes
+$TreatCopiedFailuresAsWarning = [bool]$Config.TreatCopiedFailuresAsWarning
+$MinFreeSpaceGB   = $Config.MinFreeSpaceGB
+
+#endregion
+
+#region ===================== ИНИЦИАЛИЗАЦИЯ =====================
+
+if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }
+$LogFile   = Join-Path $LogDir "$($LogFilePrefix)_$(Get-Date -Format dd-MM-yyyy_HH-mm).txt"
+$StopWatch = [System.Diagnostics.Stopwatch]::StartNew()
+$FinalExit = 1
+
+function Write-Log {
+    param([string]$Message, [string]$Level = "ИНФО")
+    "$(Get-Date -Format G) [$Level] $Message" | Add-Content -Path $LogFile -Encoding UTF8
+}
+
+# --- Защита от параллельного запуска: имя мьютекса уникально для каждой задачи ---
+$MutexName = "Global\Backup_Sync_Mutex_$($TaskName -replace '[^a-zA-Z0-9]', '_')"
+$Mutex = New-Object System.Threading.Mutex($false, $MutexName)
+if (-not $Mutex.WaitOne(0)) {
+    Write-Log "Обнаружен уже запущенный экземпляр задачи '$TaskName'. Завершение работы." "ПРЕДУПРЕЖДЕНИЕ"
+    exit 2
+}
+
+#endregion
+
+#region ===================== TELEGRAM =====================
+
+function Send-TelegramNotification {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [int]$MaxAttempts = 3
+    )
+    if (-not $BOT_TOKEN) {
+        Write-Log "Токен Telegram не задан (common.psd1 / $ConfigPath)." "ОШИБКА"
+        return
+    }
+
+    $uri  = "https://api.telegram.org/bot$BOT_TOKEN/sendMessage"
+    $body = @{
+        chat_id    = $CHAT_ID
+        text       = $Message
+        parse_mode = "Markdown"
+    }
+    if ($MESSAGE_THREAD_ID) { $body.message_thread_id = $MESSAGE_THREAD_ID }
+
+    for ($i = 1; $i -le $MaxAttempts; $i++) {
+        try {
+            Invoke-RestMethod -Uri $uri -Method Post -Body $body -TimeoutSec 15 | Out-Null
+            Write-Log "Уведомление в Telegram отправлено успешно (попытка $i)."
+            return
+        } catch {
+            Write-Log "Ошибка отправки в Telegram (попытка $i из $MaxAttempts): $($_.Exception.Message)" "ОШИБКА"
+            if ($i -lt $MaxAttempts) { Start-Sleep -Seconds (3 * $i) }
+        }
+    }
+    Write-Log "Не удалось отправить уведомление в Telegram после $MaxAttempts попыток." "ОШИБКА"
+}
+
+#endregion
+
+#region ===================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====================
+
+function Remove-OldLogs {
+    Get-ChildItem -Path $LogDir -Filter "$($LogFilePrefix)_*.txt" -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-$LogRetentionDays) } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
+function Test-Prerequisites {
+    if (-not (Test-Path -Path $SOURCE)) {
+        throw "Источник недоступен: $SOURCE"
+    }
+    $qualifier = Split-Path -Qualifier $DESTINATION -ErrorAction SilentlyContinue
+    if ($qualifier) {
+        $disk = Get-PSDrive -Name $qualifier.TrimEnd(':') -ErrorAction SilentlyContinue
+        if ($disk) {
+            $freeGB = [math]::Round($disk.Free / 1GB, 1)
+            if ($freeGB -lt $MinFreeSpaceGB) {
+                Write-Log "Свободного места на диске назначения мало: $freeGB ГБ." "ПРЕДУПРЕЖДЕНИЕ"
+            }
+        }
+    }
+}
+
+#endregion
+
+#region ===================== ОСНОВНАЯ ЛОГИКА =====================
+
+try {
+    Write-Log "===== Запуск задачи '$TaskName' (Invoke-MirrorBackup v4.0) ====="
+    Test-Prerequisites
+
+    $StartMsg = "▶️ *ЗАПУСК БЭКАПА: $TaskName*`n" +
+                "*Сервер:* $env:COMPUTERNAME`n" +
+                "*Начало:* $(Get-Date -Format G)`n" +
+                "*Источник:* $SOURCE"
+    Send-TelegramNotification -Message $StartMsg
+
+    $RobocopyArgs = @(
+        $SOURCE, $DESTINATION,
+        "/MIR", "/MT:$Threads", "/R:5", "/W:5",
+        "/NP", "/XA:SH", "/XJ", "/NFL", "/NDL",
+        "/UNILOG:$LogFile"   # Unicode-лог — корректно пишет кириллические имена файлов
+    )
+    if ($CopyAcls) { $RobocopyArgs += "/SEC" }
+    if ($ExcludedFiles.Count -gt 0) { $RobocopyArgs += "/XF"; $RobocopyArgs += $ExcludedFiles }
+    if ($ExcludedDirs.Count  -gt 0) { $RobocopyArgs += "/XD"; $RobocopyArgs += $ExcludedDirs }
+    if ($DryRun) {
+        $RobocopyArgs += "/L"
+        Write-Log "Режим DryRun (/L) — реальные изменения не вносятся."
+    }
+
+    Write-Log "Команда: robocopy $($RobocopyArgs -join ' ')"
+    & robocopy @RobocopyArgs
+    $ExitCode = $LASTEXITCODE
+
+    $LogContent = Get-Content -Path $LogFile -Raw -Encoding Unicode -ErrorAction SilentlyContinue
+    if (-not $LogContent) {
+        $LogContent = Get-Content -Path $LogFile -Raw -ErrorAction SilentlyContinue
+    }
+
+    $Duration = $StopWatch.Elapsed.ToString("hh\:mm\:ss")
+
+    # Бит 8 в коде возврата Robocopy = "некоторые файлы/каталоги не скопированы"
+    # (сбои копирования были, но не обязательно фатальные — retry мог не помочь).
+    $HasCopyErrors = ($ExitCode -band 8) -eq 8
+
+    if ($NonCriticalExitCodes -contains $ExitCode) {
+
+        $FoundHex = @()
+        if ($LogContent -and $CriticalErrorHexCodes) {
+            $pattern = "\(($($CriticalErrorHexCodes -join '|'))\)"
+            [regex]::Matches($LogContent, $pattern) | ForEach-Object {
+                $code = $_.Groups[1].Value
+                if ($FoundHex -notcontains $code) { $FoundHex += $code }
+            }
+        }
+
+        $IsWarning = ($FoundHex.Count -gt 0) -or ($HasCopyErrors -and $TreatCopiedFailuresAsWarning)
+
+        if ($IsWarning) {
+            $reasonParts = @()
+            if ($FoundHex.Count -gt 0) { $reasonParts += "найдены HEX-коды: $($FoundHex -join ', ')" }
+            if ($HasCopyErrors -and $TreatCopiedFailuresAsWarning) { $reasonParts += "код возврата указывает на несколько несокопированных файлов (бит 8)" }
+            $reason = $reasonParts -join '; '
+
+            Write-Log "Robocopy завершён с кодом $ExitCode, но обнаружены проблемы: $reason." "ВНИМАНИЕ"
+            $msg = "⚠️ *ВНИМАНИЕ: обнаружены проблемы при некритическом коде возврата — $TaskName*`n" +
+                   "*Сервер:* $env:COMPUTERNAME`n" +
+                   "*Код Robocopy:* $ExitCode`n" +
+                   "*Длительность:* $Duration`n" +
+                   "*Причина:* $reason`n" +
+                   "*Лог-файл:* $LogFile"
+            Send-TelegramNotification -Message $msg
+        } else {
+            Write-Log "Robocopy завершён без критических ошибок (код $ExitCode). Длительность: $Duration." "УСПЕХ"
+            $msg = "✅ *БЭКАП УСПЕШНО ЗАВЕРШЁН: $TaskName*`n" +
+                   "*Сервер:* $env:COMPUTERNAME`n" +
+                   "*Код Robocopy:* $ExitCode`n" +
+                   "*Длительность:* $Duration`n" +
+                   "*Лог-файл:* $LogFile"
+            Send-TelegramNotification -Message $msg
+        }
+        $FinalExit = 0
+
+    } else {
+        Write-Log "КРИТИЧЕСКАЯ ОШИБКА: Robocopy вернул код $ExitCode." "КРИТИЧЕСКАЯ ОШИБКА"
+        $msg = "🚨 *КРИТИЧЕСКИЙ СБОЙ БЭКАПА: $TaskName*`n" +
+               "*Сервер:* $env:COMPUTERNAME`n" +
+               "*Код Robocopy:* $ExitCode`n" +
+               "*Длительность:* $Duration`n" +
+               "*Лог-файл:* $LogFile`n`n" +
+               "Срочно проверьте доступ к $SOURCE."
+        Send-TelegramNotification -Message $msg
+        $FinalExit = 1
+    }
+
+    Remove-OldLogs
+}
+catch {
+    Write-Log "НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ: $($_.Exception.Message)" "КРИТИЧЕСКАЯ ОШИБКА"
+    $msg = "🚨 *СКРИПТ АВАРИЙНО ЗАВЕРШИЛСЯ: $TaskName*`n" +
+           "*Сервер:* $env:COMPUTERNAME`n" +
+           "*Ошибка:* $($_.Exception.Message)`n" +
+           "*Лог-файл:* $LogFile"
+    Send-TelegramNotification -Message $msg
+    $FinalExit = 1
+}
+finally {
+    $Mutex.ReleaseMutex() | Out-Null
+    $Mutex.Dispose()
+}
+
+exit $FinalExit
+
+#endregion

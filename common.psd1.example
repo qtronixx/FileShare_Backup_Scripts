@@ -1,0 +1,22 @@
+# ШАБЛОН. Скопируйте этот файл в common.psd1 и подставьте реальный токен.
+# common.psd1 в git не коммитится (см. .gitignore) — только этот .example-файл.
+@{
+    # --- Telegram (общие для всех задач) ---
+    BotToken        = 'PUT_YOUR_BOT_TOKEN_HERE'
+    ChatId          = '-1000000000000'
+    MessageThreadId = '1'           # можно перекрыть в конфиге задачи своим топиком
+
+    # --- Robocopy по умолчанию ---
+    Threads = 64
+
+    # --- Классификация результатов ---
+    NonCriticalExitCodes         = @(0,1,2,3,4,5,6,7,8,9,10,11)
+    CriticalErrorHexCodes        = @('0x00000005', '0x00000020')
+    TreatCopiedFailuresAsWarning = $true
+
+    # --- Логи ---
+    LogRetentionDays = 30
+
+    # --- Прочее ---
+    MinFreeSpaceGB = 20
+}
