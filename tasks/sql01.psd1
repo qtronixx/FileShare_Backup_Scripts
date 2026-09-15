@@ -1,4 +1,4 @@
-@{
+﻿@{
     TaskName      = 'Базы данных SQL (s-prn01)'
     Source        = '\\s-prn01\backup_sql'
     Destination   = 'D:\Bckp\Databases'
