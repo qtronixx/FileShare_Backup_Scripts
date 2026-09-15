@@ -1,95 +1,122 @@
-# PS-MultiSync-Backup 🚀
+# Invoke-MirrorBackup
 
-> 🇷🇺 **Russian version of this documentation is available [here](README.ru.md).**
+Backup/one-way mirroring script (Robocopy) with flexible error classification and Telegram notifications. A single script serves an arbitrary number of independent tasks (file shares, directories with DB dumps, etc.) — task settings are defined in a separate config, without changing the code.
 
-An automation script for mirroring file storages and databases based on **PowerShell** and **Robocopy**. Designed specifically for enterprise IT infrastructure.
+## Features
 
-## ✨ Key Features
-- **Multitasking:** Execute any number of backup tasks in a single run.
-- **Configuration Hierarchy:** Global parameters (threads, exclusions, flags) are automatically applied to all tasks unless overridden within a specific task.
-- **Smart Telegram Notifications:** Distinct status alerts (Success, Warning, Error) including the specific task name and server source.
-- **Deep Diagnostics:** The script analyzes Robocopy logs for specific Win32 errors (e.g., `0x00000005` — Access Denied), even if the overall exit code suggests success.
-- **Automatic Rotation:** Logs are archived into `Year/Month` folder structures, preventing working directory clutter.
-- **Advanced Error Handling:**
-  - The script doesn't rely solely on the Robocopy exit code (`$LASTEXITCODE`), which is a sum of bitwise flags.
-  - It utilizes customizable lists: `$NonCriticalExitCodes` and `$CriticalErrorHexCodes` for precise failure criticality assessment.
-  - If the exit code is considered non-critical, but **specific critical Win32 HEX codes** (like Access Denied) are found within the log file, the task status is upgraded to **"WARNING"**.
+- One-way mirroring (`/MIR`) of a source to a destination with multithreading (`/MT`).
+- Result classification: **SUCCESS / WARNING / CRITICAL FAILURE** — not only by Robocopy exit code (sum of bit flags), but also by analyzing the log for HEX codes of critical Win32 errors (for example, access denied), even if the final exit code is non-critical.
+- Telegram notifications at startup, on success, warning, and critical failure, with retries and timeout in case Telegram is unavailable.
+- Task settings are fully moved to `.psd1` configs: common ones (Telegram, error codes, log retention) — in `common.psd1`, task-specific ones (source/destination, exclusions) — in `tasks/*.psd1`. A task can override any common field.
+- Unicode Robocopy log (`/UNILOG:`) — correctly writes Cyrillic file and path names regardless of the console code page.
+- Protection against parallel execution of the same task (named Mutex per task — different tasks do not interfere with each other and can run simultaneously).
+- Check of source availability and free space on the destination disk before starting.
+- Automatic rotation of old logs.
+- `-DryRun` mode (equivalent to `/L` in Robocopy) — shows what would be done without actual changes.
 
-## 🛠 Requirements
-- Windows OS / Windows Server.
-- PowerShell 5.1 (Standard).
-- Execution under a domain service account with read permissions for the target file shares.
-- **Important:** Save the script and config files using **UTF-8 with BOM** encoding to ensure correct Cyrillic character handling.
+## Repository structure
 
-## 🚀 Quick Start
+```
+.
+├── Invoke-MirrorBackup.ps1   # the only script
+├── common.psd1.example       # common config template (without secret) — committed to git
+├── common.psd1               # real config with token — NOT committed (see .gitignore)
+├── .gitignore
+└── tasks/
+    ├── share01.psd1          # example: file share
+    └── sql01.psd1            # example: directory with DB backups
+```
 
-1. **Clone the repository:**
-   ```bash
-   git clone [https://github.com/qtronixx/FileShare_Backup_Scripts.git](https://github.com/qtronixx/FileShare_Backup_Scripts.git)
+## Requirements
 
-  # PS-MultiSync-Backup 🚀
+- Windows Server / Windows with PowerShell 5.1+ and Robocopy (included with the OS).
+- Domain or local service account with permissions to read the source(s) and write to the destination(s), under which the scheduler task will run.
+- Telegram bot (created via [@BotFather](https://t.me/BotFather)) and the chat_id of the channel/chat where it has been added as a member.
 
-  PowerShell automation for mirroring file shares and backups using Robocopy. Designed for reliable, configurable, and auditable backups in enterprise environments.
+## Quick start
 
-  ## Key updates (recent)
-  - New config options: `SendTelegram`, `ArchiveCompression`, `ArchiveKeepOriginal`, `LogLevel`.
-  - `-TaskName` parameter: run only specified tasks (comma-separated). When used, specified tasks run regardless of their `Enabled` flag.
-  - `Enabled` per-task: when running without `-TaskName`, only tasks with `Enabled = $true` are executed.
-  - Logging: per-task logs are stored in `<LogDirectory>/<TaskName>_log/`; a main script log `sync_share_YYYY-MM-dd_HH-mm.txt` is saved in the root `LogDirectory`.
-  - Rotation & archive: logs older than today are moved to `LogDirectory/Archive/yyyy/MM/...` preserving subfolder structure and then compressed to ZIP (configurable).
+1. Copy `Invoke-MirrorBackup.ps1` and the `tasks/` folder to the server, for example to `C:\Scripts`.
+2. Copy `common.psd1.example` to `common.psd1` next to the script and fill in real `BotToken` and `ChatId`.
+3. Restrict access to the script folder (`common.psd1` stores the token in plain text; the only protection is NTFS permissions):
+   ```powershell
+   icacls "C:\Scripts" /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F"
+   ```
+4. Edit (or add a new) file in `tasks/` for your task — see the [Task configuration](#configuration) section.
+5. Test in dry-run mode without copying or deleting anything:
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Scripts\Invoke-MirrorBackup.ps1 -ConfigPath C:\Scripts\tasks\share01.psd1 -DryRun
+   ```
+   and review the log in the folder specified in the task config's `LogDir`.
+6. Remove `-DryRun` and add one task per `.psd1` to Task Scheduler:
+   ```
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Scripts\Invoke-MirrorBackup.ps1 -ConfigPath C:\Scripts\tasks\share01.psd1
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Scripts\Invoke-MirrorBackup.ps1 -ConfigPath C:\Scripts\tasks\sql01.psd1
+   ```
+   The task must be run under the same service account with the required access permissions.
 
-  ## New config options
-  - `SendTelegram` (bool) — enable/disable sending Telegram notifications (default: `$true`).
-  - `ArchiveCompression` (bool) — compress archived monthly folders to ZIP (default: `$true`).
-  - `ArchiveKeepOriginal` (bool) — keep original archived folders after compression (default: `$false`).
-  - `LogLevel` (string) — `Debug|Info|Warning|Error` (default: `Info`).
+## Configuration
 
-  Recommendation: keep `BOT_TOKEN` out of the repo. You can set `BOT_TOKEN = $env:SYNC_BOT_TOKEN` in `config.psd1` and supply `SYNC_BOT_TOKEN` via environment or service secrets.
+The final configuration is assembled in ascending priority order:
+**built-in defaults → `common.psd1` → task config (`-ConfigPath`)**.
+Any field from `common.psd1` can be overridden in a specific task.
 
-  ## Behavior notes
-  - If you run `.\sync_share.ps1` without arguments, the script processes only tasks with `Enabled = $true` (skips and logs disabled tasks).
-  - If you run `.\sync_share.ps1 -TaskName "Name1,Name2"` the script will execute the named tasks regardless of `Enabled` value. If any requested names are not found, the script warns and either fails (if none matched) or proceeds with matched tasks, logging missing names.
-  - Telegram messages can be globally suppressed by setting `SendTelegram = $false` in `config.psd1` or overridden by future CLI flags.
+### common.psd1 — common for all tasks
 
-  ## Logs
-  - Main log: `<LogDirectory>/sync_share_YYYY-MM-dd_HH-mm.txt` — contains start/end of tasks, warnings, rotation and archive actions, suppressed messages.
-  - Per-task logs: `<LogDirectory>/<TaskName>_log/<LogName>_DD-MM-YYYY_HH-mm.txt`.
-  - Rotation moves old logs into `Archive/yyyy/MM/<relative path>` and optionally compresses month folders into ZIP files.
+| Field                           | Purpose                                                                     |
+|--------------------------------|-----------------------------------------------------------------------------|
+| `BotToken`                     | Telegram bot token.                                                         |
+| `ChatId`                       | Chat/channel ID for notifications.                                          |
+| `MessageThreadId`              | Topic ID (if chat has topics). Can be overridden in a task.                |
+| `Threads`                      | Value for Robocopy `/MT:N`.                                                 |
+| `NonCriticalExitCodes`         | Robocopy exit codes not considered critical by themselves.                  |
+| `CriticalErrorHexCodes`        | HEX codes of Win32 errors in the log (e.g., `0x00000005`) that raise the status to "WARNING" even with a non-critical exit code. |
+| `TreatCopiedFailuresAsWarning` | If `$true` — the set bit `8` in the exit code (some files not copied) always gives "WARNING" status rather than a silent "SUCCESS". |
+| `LogRetentionDays`             | How many days to keep old logs before auto-deletion.                        |
+| `MinFreeSpaceGB`               | Free space threshold on the destination disk for a warning.                 |
 
-  ## Quick Start
+### tasks/*.psd1 — task-specific
 
-  1. Copy config example and edit:
-  ```powershell
-  cp config.psd1.example config.psd1
-  ```
+| Field            | Purpose                                                                  |
+|------------------|--------------------------------------------------------------------------|
+| `TaskName`       | Task name — used in logs, Mutex name, and Telegram messages. Required.   |
+| `Source`         | Copy source (UNC path or local). Required.                               |
+| `Destination`    | Copy destination. Required.                                              |
+| `LogDir`         | Folder for this task's logs. Required.                                   |
+| `LogFilePrefix`  | Log file name prefix. Required.                                          |
+| `CopyAcls`       | `$true` — adds `/SEC` (preserve source NTFS permissions). For file shares usually `$true`, for DB dump directories — `$false`. |
+| `ExcludedFiles`  | List of file patterns for `/XF`.                                         |
+| `ExcludedDirs`   | List of directory patterns for `/XD`.                                    |
+| `MessageThreadId`| (optional) separate Telegram topic for this task, if different from the common one. |
 
-  2. Edit `config.psd1`: set `BOT_TOKEN` (or use `SYNC_BOT_TOKEN` env var), `CHAT_ID`, `LogDirectory`, tasks array.
+## Notification logic
 
-  3. Run (examples):
-  ```powershell
-  # run enabled tasks only
-  .\sync_share.ps1
+| Condition                                                                                  | Status             |
+|--------------------------------------------------------------------------------------------|--------------------|
+| Exit code **not** in `NonCriticalExitCodes`                                                | 🚨 CRITICAL FAILURE |
+| Exit code in `NonCriticalExitCodes`, but one of `CriticalErrorHexCodes` found in the log    | ⚠️ WARNING          |
+| Exit code in `NonCriticalExitCodes`, bit 8 set (some files not copied), and `TreatCopiedFailuresAsWarning = $true` | ⚠️ WARNING |
+| Exit code in `NonCriticalExitCodes`, no critical HEX codes found, no bit 8 (or `TreatCopiedFailuresAsWarning = $false`) | ✅ SUCCESS |
 
-  # run specific tasks (runs even if Enabled=$false)
-  .\sync_share.ps1 -TaskName "SQL,fileshare"
-  ```
+Robocopy exit codes — sum of bit flags (see [Microsoft documentation](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/robocopy)):
+`0` — no files to copy; `1` — files copied; `2` — extra files/directories detected in destination; `4` — mismatches detected; `8` — some files/directories not copied; `16` — serious error, nothing copied.
 
-  ## Config examples
-  Set `BOT_TOKEN` from environment in `config.psd1`:
-  ```powershell
-  BOT_TOKEN = $env:SYNC_BOT_TOKEN
-  ```
+## Security
 
-  Example task block:
-  ```powershell
-  @{
-    Name = 'fileshare'
-    Enabled = $true
-    Source = '\\s-fs03\path\to\share'
-    Destination = 'C:\\tmp\\FileShare'
-    LogName = 'Bckp_FileShare'
-    MultiThread = 32
-  }
-  ```
+- The Telegram token is stored in `common.psd1` in plain text deliberately: the token's value is limited by the bot's permissions (it can only write to chats it is already a member of), so if the server is compromised it is enough to revoke it via @BotFather and issue a new one. The only real protection is NTFS permissions on the script folder (see above).
+- `common.psd1` **must not** get into git — commit only `common.psd1.example` (already covered in `.gitignore`).
+- Configs are parsed via `Import-PowerShellDataFile`, which understands only literals (hash tables/strings/arrays/numbers) and cannot execute arbitrary code — unlike dot-sourcing a regular `.ps1` as a config.
 
-  ---
+## Troubleshooting
+
+- **"Configuration file not found"** — check the path in `-ConfigPath` and the presence of `common.psd1` next to the script (or pass `-CommonConfigPath` explicitly).
+- **"Source unavailable"** — check the availability of the UNC path and the permissions of the service account under which the task runs.
+- **The task immediately exits with code 2** — the previous run of the same task has not finished yet (parallel-run protection triggered). Different tasks do not affect each other.
+- **Telegram notifications do not arrive** — check `BotToken`/`ChatId` in the config, whether the bot was added to the chat, and look at the task log — sending errors are logged with details of the Telegram API response.
+- Cyrillic in the log looks like mojibake — this should not happen thanks to `/UNILOG:`; if it still does, open the log explicitly as `Get-Content -Encoding Unicode`.
+
+## Versions
+
+- **4.0** — common `common.psd1` + task configs in `tasks/`, `TreatCopiedFailuresAsWarning`.
+- **3.0** — single script for multiple tasks, config per task as a whole.
+- **2.x** — settings and token moved from code to config, Unicode log, Telegram retries, parallel-run protection.
+- **1.6** — initial version (separate scripts for share and DB, token in code).
