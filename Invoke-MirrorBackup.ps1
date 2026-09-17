@@ -56,7 +56,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ConfigPath,
 
-    [string]$CommonConfigPath = (Join-Path $PSScriptRoot "common.psd1"),
+    [string]$CommonConfigPath = '', #(Join-Path $PSScriptRoot "common.psd1"),
 
     [switch]$DryRun
 )
@@ -69,6 +69,12 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 #region ===================== КОНФИГУРАЦИЯ =====================
+
+# При powershell.exe -File в PS 5.1 $PSScriptRoot в дефолтах param() ещё пуст,
+# поэтому путь к common.psd1 вычисляем здесь — ДО первой загрузки конфигов.
+if (-not $CommonConfigPath) {
+    $CommonConfigPath = Join-Path $PSScriptRoot 'common.psd1'
+}
 
 function Import-Psd1Safe {
     param([string]$Path, [string]$What)
@@ -144,7 +150,7 @@ $FinalExit = 1
 
 function Write-Log {
     param([string]$Message, [string]$Level = "ИНФО")
-    "$(Get-Date -Format G) [$Level] $Message" | Add-Content -Path $LogFile -Encoding UTF8
+    "$(Get-Date -Format G) [$Level] $Message" | Out-File -FilePath $LogFile -Append -Encoding Unicode
 }
 
 # --- Защита от параллельного запуска: имя мьютекса уникально для каждой задачи ---
@@ -152,7 +158,7 @@ $MutexName = "Global\Backup_Sync_Mutex_$($TaskName -replace '[^a-zA-Z0-9]', '_')
 $Mutex = New-Object System.Threading.Mutex($false, $MutexName)
 if (-not $Mutex.WaitOne(0)) {
     Write-Log "Обнаружен уже запущенный экземпляр задачи '$TaskName'. Завершение работы." "ПРЕДУПРЕЖДЕНИЕ"
-    exit 2
+    exit 4
 }
 
 #endregion
@@ -240,7 +246,7 @@ function Test-Prerequisites {
 #region ===================== ОСНОВНАЯ ЛОГИКА =====================
 
 try {
-    Write-Log "===== Запуск задачи '$TaskName' (Invoke-MirrorBackup v4.0) ====="
+    Write-Log "===== Запуск задачи '$TaskName' (Invoke-MirrorBackup v4.1) ====="
     Test-Prerequisites
 
     $StartMsg = "▶️ *ЗАПУСК БЭКАПА: $TaskName*`n" +
@@ -253,7 +259,7 @@ try {
         $SOURCE, $DESTINATION,
         "/MIR", "/MT:$Threads", "/R:5", "/W:5",
         "/NP", "/XA:SH", "/XJ", "/NFL", "/NDL",
-        "/UNILOG:$LogFile"   # Unicode-лог — корректно пишет кириллические имена файлов
+        "/UNILOG+:$LogFile"   # Unicode-лог — корректно пишет кириллические имена файлов
     )
     if ($CopyAcls) { $RobocopyArgs += "/SEC" }
     if ($ExcludedFiles.Count -gt 0) { $RobocopyArgs += "/XF"; $RobocopyArgs += $ExcludedFiles }
@@ -314,7 +320,7 @@ try {
                    "*Лог-файл:* $LogFile"
             Send-TelegramNotification -Message $msg
         }
-        $FinalExit = 0
+        $FinalExit = 2
 
     } else {
         Write-Log "КРИТИЧЕСКАЯ ОШИБКА: Robocopy вернул код $ExitCode." "КРИТИЧЕСКАЯ ОШИБКА"
