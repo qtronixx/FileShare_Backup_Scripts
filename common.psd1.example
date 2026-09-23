@@ -15,6 +15,20 @@
     ProxyUrl                   = $null   # например: 'http://proxy.corp.local:3128'
     ProxyUseDefaultCredentials = $false
 
+<<<<<<< HEAD
+=======
+    # --- Naumen ITSM 365 ---
+    # Заявка создаётся ТОЛЬКО при статусе КРИТИЧЕСКИЙ СБОЙ. Повторный сбой той же
+    # задачи не плодит новую заявку — добавляется комментарий к уже открытой
+    # (дедупликация по sourceMesId = SdSourceMesIdPrefix + имя задачи).
+    SendToServiceDesk   = $false
+    SdBaseUrl           = 'https://<tenant>.itsm365.ru'
+    SdAccessKey         = 'PUT_YOUR_ACCESS_KEY_HERE'
+    SdAgreement         = 'agreement$XXXXXXX'   # обязательно уточнить у администратора Naumen
+    SdClientName        = 'Backup Automation'
+    SdSourceMesIdPrefix = 'backup_'
+
+>>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
     # --- Robocopy по умолчанию ---
     Threads = 64
 
