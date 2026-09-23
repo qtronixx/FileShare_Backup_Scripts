@@ -39,11 +39,15 @@
 .NOTES
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
   Версия: 4.1
 =======
   Версия: 4.2
 =======
   Версия: 4.3
+=======
+  Версия: 4.4
+>>>>>>> 3789457 (feat(sd): team/service/category assignment; fix dedup and URI building)
   Изменения по сравнению с 4.2:
     - Добавлен параметр -TestServiceDesk: создаёт одну тестовую заявку в Service Desk
       с отдельным sourceMesId, без запуска Robocopy — для проверки конфигурации
@@ -141,7 +145,13 @@ $Defaults = @{
     SdAgreement        = $null   # например: 'agreement$2730701' — обязательно при SendToServiceDesk=$true
     SdClientName       = 'Backup Automation'
     SdSourceMesIdPrefix = 'backup_'
+<<<<<<< HEAD
 >>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
+=======
+    SdTeam = $null
+    SdService = $null
+    SdCategory = $null
+>>>>>>> 3789457 (feat(sd): team/service/category assignment; fix dedup and URI building)
 }
 
 $Common = Import-Psd1Safe -Path $CommonConfigPath -What "Общий конфиг"
@@ -187,6 +197,9 @@ $SdBaseUrl           = $Config.SdBaseUrl
 $SdAccessKey         = $Config.SdAccessKey
 $SdAgreement         = $Config.SdAgreement
 $SdClientName        = $Config.SdClientName
+$SdTeam              = $Config.SdTeam
+$SdService           = $Config.SdService
+$SdCategory          = $Config.SdCategory
 $SdSourceMesIdPrefix = $Config.SdSourceMesIdPrefix
 
 >>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
@@ -294,14 +307,20 @@ function Find-SdIncident {
     param([string]$SourceMesId)
     $path = "/sd/services/rest/find/serviceCall"
     try {
-        $uri  = "$SdBaseUrl$path?accessKey=$SdAccessKey&attrs=UUID,state,shortDescr"
+        $uri = "$SdBaseUrl${path}?accessKey=$SdAccessKey&attrs=UUID,state,shortDescr"
         $body = @{ sourceMesId = $SourceMesId } | ConvertTo-Json
         $restParams = Get-SdRestParams
         $resp = Invoke-RestMethod -Uri $uri -Method Post -Body $body @restParams
-        # Схема ответа не задокументирована однозначно — подстраховываемся под разные варианты.
-        if ($resp -is [System.Array])   { return $resp | Select-Object -First 1 }
-        if ($resp.objects)               { return $resp.objects | Select-Object -First 1 }
-        if ($resp.UUID)                  { return $resp }
+
+        # Naumen возвращает конверт { "value": [...], "Count": N }; подстраховываемся
+        # и под другие варианты формы ответа.
+        $items = $null
+        if     ($resp -is [System.Array]) { $items = $resp }
+        elseif ($resp.value)              { $items = @($resp.value) }
+        elseif ($resp.objects)            { $items = @($resp.objects) }
+        elseif ($resp.UUID)               { $items = @($resp) }
+
+        if ($items -and $items.Count -gt 0) { return $items | Select-Object -First 1 }
         return $null
     } catch {
         Write-Log "Ошибка поиска заявки SD ($path): $($_.Exception.Message)" "ОШИБКА"
@@ -312,16 +331,19 @@ function Find-SdIncident {
 function New-SdIncident {
     param([string]$ShortDescr, [string]$DescriptionRTF, [string]$SourceMesId)
     $path = "/sd/services/rest/create-m2m/serviceCall"
-    $uri  = "$SdBaseUrl$path?accessKey=$SdAccessKey&attrs=UUID"
+    $uri = "$SdBaseUrl${path}?accessKey=$SdAccessKey&attrs=UUID"
     $payload = @{
-        metaClass      = 'serviceCall$serviceCall'   # обязательно одинарные кавычки — иначе PowerShell попытается подставить $serviceCall как переменную
+        metaClass      = 'serviceCall$serviceCall'
         shortDescr     = $ShortDescr
         agreement      = $SdAgreement
-        state          = "inprogress"
         descriptionRTF = $DescriptionRTF
         clientName     = $SdClientName
         sourceMesId    = $SourceMesId
-    } | ConvertTo-Json
+    }
+    if ($SdTeam)    { $payload.responsibleTeam = $SdTeam }
+    if ($SdService) { $payload.service = $SdService }
+    if ($SdCategory) { $payload.baseCategory = $SdCategory }
+    $payload = $payload | ConvertTo-Json
     $restParams = Get-SdRestParams
     $resp = Invoke-RestMethod -Uri $uri -Method Post -Body $payload @restParams
     return $resp.UUID
@@ -330,7 +352,7 @@ function New-SdIncident {
 function Add-SdComment {
     param([string]$Uuid, [string]$Text)
     $path = "/sd/services/rest/create-m2m/comment"
-    $uri  = "$SdBaseUrl$path?accessKey=$SdAccessKey"
+    $uri = "$SdBaseUrl${path}?accessKey=$SdAccessKey"
     $payload = @{ source = $Uuid; text = $Text; private = $true } | ConvertTo-Json
     $restParams = Get-SdRestParams
     Invoke-RestMethod -Uri $uri -Method Post -Body $payload @restParams | Out-Null
@@ -339,7 +361,10 @@ function Add-SdComment {
 function Send-ServiceDeskIncident {
     param([string]$ShortDescr, [string]$DescriptionRTF)
 
-    if (-not $SendToServiceDesk) { return $null }
+    if (-not $SendToServiceDesk) {
+        Write-Log "Заявка в SD не создаётся: SendToServiceDesk = `$false." "ИНФО"
+        return $null
+    }
     if (-not $SdBaseUrl -or -not $SdAccessKey -or -not $SdAgreement) {
         Write-Log "SD-интеграция включена (SendToServiceDesk=`$true), но не заданы SdBaseUrl/SdAccessKey/SdAgreement." "ОШИБКА"
         return $null
@@ -357,7 +382,15 @@ function Send-ServiceDeskIncident {
         Write-Log "Создана заявка в Service Desk: $uuid"
         return $uuid
     } catch {
-        Write-Log "Ошибка создания/обновления заявки в Service Desk: $($_.Exception.Message)" "ОШИБКА"
+        $detail = $_.Exception.Message
+        $resp = $_.Exception.Response
+        if ($resp) {
+            try {
+                $sr = New-Object IO.StreamReader($resp.GetResponseStream())
+                $detail += " | Тело ответа: " + $sr.ReadToEnd()
+            } catch { }
+        }
+        Write-Log "Ошибка создания/обновления заявки в Service Desk: $detail" "ОШИБКА"
         return $null
     }
 }
