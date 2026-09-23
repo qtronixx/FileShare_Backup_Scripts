@@ -30,11 +30,27 @@
 .PARAMETER DryRun
   Запускает Robocopy с флагом /L — ничего не меняет, только показывает, что было бы сделано.
 
+.PARAMETER TestServiceDesk
+  Не выполняет Robocopy вообще. Создаёт одну тестовую заявку в Service Desk с отдельным
+  sourceMesId (не пересекается с боевым ключом дедупликации задачи) и завершает работу.
+  Используется для проверки SdBaseUrl/SdAccessKey/SdAgreement без риска потревожить
+  реальные данные задачи или испортить историю дедупликации.
+
 .NOTES
+<<<<<<< HEAD
 <<<<<<< HEAD
   Версия: 4.1
 =======
   Версия: 4.2
+=======
+  Версия: 4.3
+  Изменения по сравнению с 4.2:
+    - Добавлен параметр -TestServiceDesk: создаёт одну тестовую заявку в Service Desk
+      с отдельным sourceMesId, без запуска Robocopy — для проверки конфигурации
+      Naumen ITSM 365 без риска для боевых данных задачи.
+    - Прокси (ProxyUrl/ProxyUseDefaultCredentials) применяется ТОЛЬКО к запросам в
+      Telegram — запросы к Naumen ITSM 365 всегда идут напрямую, без прокси.
+>>>>>>> c19f9b4 (Добавлен отдельный флаг -TestServiceDesk)
   Изменения по сравнению с 4.1:
     - Добавлена интеграция с Naumen ITSM 365: при КРИТИЧЕСКОМ СБОЕ (и только при нём)
       создаётся заявка через REST API. Дедупликация по sourceMesId — повторный сбой
@@ -70,7 +86,9 @@ param(
 
     [string]$CommonConfigPath = '', #(Join-Path $PSScriptRoot "common.psd1"),
 
-    [switch]$DryRun
+    [switch]$DryRun,
+
+    [switch]$TestServiceDesk
 )
 
 $ErrorActionPreference = 'Stop'
@@ -267,14 +285,9 @@ function Send-TelegramNotification {
 #region ===================== NAUMEN ITSM 365 =====================
 
 function Get-SdRestParams {
-    # Общие параметры для Invoke-RestMethod (переиспользуем прокси от Telegram —
-    # поправьте на отдельные Sd-поля в конфиге, если у ITSM 365 другой сетевой путь).
-    $p = @{ ContentType = 'application/json; charset=utf-8'; TimeoutSec = 20 }
-    if ($ProxyUrl) {
-        $p.Proxy = $ProxyUrl
-        if ($ProxyUseDefaultCredentials) { $p.ProxyUseDefaultCredentials = $true }
-    }
-    return $p
+    # Прокси сюда сознательно не пробрасывается: ITSM 365 доступен напрямую,
+    # прокси используется только для обхода блокировок Telegram.
+    return @{ ContentType = 'application/json; charset=utf-8'; TimeoutSec = 20 }
 }
 
 function Find-SdIncident {
@@ -380,12 +393,41 @@ function Test-Prerequisites {
 
 #region ===================== ОСНОВНАЯ ЛОГИКА =====================
 
+if ($TestServiceDesk) {
+    Write-Log "Тестовая проверка интеграции с Service Desk (-TestServiceDesk). Robocopy не запускается." "ИНФО"
+    $TestSourceMesId = "test_$($SafeTaskName)_$(Get-Date -Format yyyyMMddHHmmss)"
+    try {
+        if (-not $SdBaseUrl -or -not $SdAccessKey -or -not $SdAgreement) {
+            throw "Не заданы SdBaseUrl/SdAccessKey/SdAgreement (проверьте $CommonConfigPath и $ConfigPath)."
+        }
+        $uuid = New-SdIncident `
+            -ShortDescr "[ТЕСТ] Проверка интеграции backup-скрипта — задача '$TaskName'" `
+            -DescriptionRTF "Тестовая заявка от Invoke-MirrorBackup.ps1 -TestServiceDesk.`nСервер: $env:COMPUTERNAME`nВремя: $(Get-Date -Format G)`nЭту заявку можно закрыть/удалить." `
+            -SourceMesId $TestSourceMesId
+        Write-Log "Тестовая заявка создана успешно: $uuid" "УСПЕХ"
+        Write-Host "Тестовая заявка создана: $uuid"
+        Write-Host "sourceMesId: $TestSourceMesId"
+        $FinalExit = 0
+    } catch {
+        Write-Log "Тестовая заявка НЕ создана: $($_.Exception.Message)" "ОШИБКА"
+        Write-Host "Ошибка: $($_.Exception.Message)" -ForegroundColor Red
+        $FinalExit = 1
+    }
+    $Mutex.ReleaseMutex() | Out-Null
+    $Mutex.Dispose()
+    exit $FinalExit
+}
+
 try {
+<<<<<<< HEAD
 <<<<<<< HEAD
     Write-Log "===== Запуск задачи '$TaskName' (Invoke-MirrorBackup v4.1) ====="
 =======
     Write-Log "===== Запуск задачи '$TaskName' (Invoke-MirrorBackup v4.2) ====="
 >>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
+=======
+    Write-Log "===== Запуск задачи '$TaskName' (Invoke-MirrorBackup v4.3) ====="
+>>>>>>> c19f9b4 (Добавлен отдельный флаг -TestServiceDesk)
     Test-Prerequisites
 
     $StartMsg = "▶️ *ЗАПУСК БЭКАПА: $TaskName*`n" +
