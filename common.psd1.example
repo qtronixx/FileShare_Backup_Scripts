@@ -19,6 +19,13 @@
     # Заявка создаётся ТОЛЬКО при статусе КРИТИЧЕСКИЙ СБОЙ. Повторный сбой той же
     # задачи не плодит новую заявку — добавляется комментарий к уже открытой
     # (дедупликация по sourceMesId = SdSourceMesIdPrefix + имя задачи).
+    #
+    # # #
+    #
+    # ВНИМАНИЕ!!! все UUID надо брать из ВАШЕГО ITSM 365
+    # тут они приведены для примера
+    # 
+    # # #
     SendToServiceDesk   = $false
     SdBaseUrl           = 'https://<tenant>.itsm365.ru'
     SdAccessKey         = 'PUT_YOUR_ACCESS_KEY_HERE'
