@@ -22,7 +22,7 @@ if (-not $cfg.SdBaseUrl -or -not $cfg.SdAccessKey) {
     agreement       = $cfg.SdAgreement
     descriptionRTF  = 'debug'
     clientName      = $cfg.SdClientName
-    sourceMesId     = "debug_$(Get-Date -Format yyyyMMddHHmmss)"
+    sourceMesId     = $SourceMesId
     service         = $cfg.SdService
     responsibleTeam = $cfg.SdTeam
     baseCategory    = $cfg.SdCategory    # BISECTION: comment out this line for run #2
@@ -31,7 +31,6 @@ if (-not $cfg.SdBaseUrl -or -not $cfg.SdAccessKey) {
 # String concatenation, not interpolation - immune to both encoding and $var? pitfalls
  $uri  = $cfg.SdBaseUrl + '/sd/services/rest/create-m2m/serviceCall?accessKey=' + $cfg.SdAccessKey + '&attrs=UUID'
  $json = $payload | ConvertTo-Json
-s
 try {
     $r = Invoke-RestMethod -Uri $uri -Method Post -Body $json `
          -ContentType 'application/json; charset=utf-8' -TimeoutSec 20

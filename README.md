@@ -69,7 +69,7 @@ where the bot has been added.
 | Code | Meaning |
 |-----|----------|
 | `0` | Success: non-critical Robocopy code; no critical HEX codes in the log; bit 8 not set. |
-| `2` | **WARNING**: some files were not copied (bit 8 — open handles/permissions) and/or HEX codes from `CriticalErrorHexCodes` were found in the log. For an active file share, this is a normal scenario: files locked during the current run are usually picked up in the next one. Check the "Failed" statistics in the log summary table. |
+| `2` | **WARNING**: Some files were not copied (bit 8 — open handles/permissions) and/or HEX codes from `CriticalErrorHexCodes` were found in the log. **This is a normal outcome for an active file share**, not a cause for alarm: at the time of copying, some files are almost always open by users or applications (including code `0x00000005` — "Access Denied" specifically due to the file being in use, rather than a permissions issue), and these are usually picked up in the next run. You should be concerned not by the mere occurrence of code 2, but by a **sharp increase** in the number of `Failed` entries in the log summary compared to the task's usual baseline, or by the same files failing night after night (indicating that the file isn't just "flickering" but is permanently stuck or locked). |
 | `1` | **CRITICAL FAILURE**: Robocopy code outside `NonCriticalExitCodes` (usually 16+) or an unhandled script exception. If SD integration is enabled, a ticket is created. |
 | `4` | Concurrent execution of the same task (mutex is locked). Not a copying error. |
 

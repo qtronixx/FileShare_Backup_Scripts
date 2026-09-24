@@ -1,21 +1,8 @@
 <#
 .SYNOPSIS
-  Единый скрипт зеркалирования (Robocopy) для нескольких задач бэкапа, настройки которых
-  собираются из общего конфига (common.psd1) и конфига конкретной задачи (tasks\*.psd1).
-
-.DESCRIPTION
-  Настройки собираются в порядке возрастания приоритета: встроенные значения по умолчанию
-  -> common.psd1 (общие для всех задач: Telegram, коды ошибок, ретеншн логов) -> конфиг
-  задачи из -ConfigPath (Source/Destination/исключения, и любые точечные переопределения
-  общих настроек, например свой MessageThreadId).
-
-  Пример структуры:
-    C:\Scripts\
-    ├── Invoke-MirrorBackup.ps1
-    ├── common.psd1
-    └── tasks\
-        ├── share01.psd1
-        └── sql01.psd1
+  Единый скрипт зеркалирования (Robocopy) для нескольких задач бэкапа с уведомлениями в
+  Telegram и регистрацией заявок в Naumen ITSM 365. Подробности, структура конфигов и
+  история версий — в README.md / README.ru.md.
 
 .PARAMETER ConfigPath
   Путь к .psd1-файлу конкретной задачи. Обязателен.
@@ -31,10 +18,6 @@
   sourceMesId (не пересекается с боевым ключом дедупликации задачи) и завершает работу.
   Используется для проверки SdBaseUrl/SdAccessKey/SdAgreement без риска потревожить
   реальные данные задачи или испортить историю дедупликации.
-
-.NOTES
-  Версия: 4.4
-    Отличия версий смотри в README.md или в README.ru.md
 
 .EXAMPLE
   .\Invoke-MirrorBackup.ps1 -ConfigPath .\tasks\share01.psd1
@@ -248,7 +231,7 @@ function Get-SdRestParams {
     return @{ ContentType = 'application/json; charset=utf-8'; TimeoutSec = 20 }
 }
 
-function Find-SdIncident {
+function Find-SdIncidents {
     param([string]$SourceMesId)
     $path = "/sd/services/rest/find/serviceCall"
     try {
@@ -259,17 +242,14 @@ function Find-SdIncident {
 
         # Naumen возвращает конверт { "value": [...], "Count": N }; подстраховываемся
         # и под другие варианты формы ответа.
-        $items = $null
-        if     ($resp -is [System.Array]) { $items = $resp }
-        elseif ($resp.value)              { $items = @($resp.value) }
-        elseif ($resp.objects)            { $items = @($resp.objects) }
-        elseif ($resp.UUID)               { $items = @($resp) }
-
-        if ($items -and $items.Count -gt 0) { return $items | Select-Object -First 1 }
-        return $null
+        if     ($resp -is [System.Array]) { return @($resp) }
+        elseif ($resp.value)              { return @($resp.value) }
+        elseif ($resp.objects)            { return @($resp.objects) }
+        elseif ($resp.UUID)               { return @($resp) }
+        return @()
     } catch {
         Write-Log "Ошибка поиска заявки SD ($path): $($_.Exception.Message)" "ОШИБКА"
-        return $null
+        return @()
     }
 }
 
@@ -316,8 +296,10 @@ function Send-ServiceDeskIncident {
     }
 
     try {
-        $existing = Find-SdIncident -SourceMesId $SdSourceMesId
-        if ($existing -and $existing.state -notin @('resolved', 'closed')) {
+        $matches = Find-SdIncidents -SourceMesId $SdSourceMesId
+        $existing = $matches | Where-Object { $_.state -notin @('resolved', 'closed') } | Select-Object -First 1
+
+        if ($existing) {
             Write-Log "Найдена открытая заявка SD $($existing.UUID) (статус $($existing.state)) — добавляю комментарий вместо новой заявки."
             Add-SdComment -Uuid $existing.UUID -Text "Повторный критический сбой ($(Get-Date -Format G)):`n$ShortDescr"
             return $existing.UUID
@@ -396,7 +378,7 @@ if ($TestServiceDesk) {
 }
 
 try {
-    Write-Log "===== Запуск задачи '$TaskName' (Invoke-MirrorBackup v4.3) ====="
+    Write-Log "===== Запуск задачи '$TaskName' ====="
     Test-Prerequisites
 
     $StartMsg = "▶️ *ЗАПУСК БЭКАПА: $TaskName*`n" +
@@ -461,6 +443,7 @@ try {
                    "*Причина:* $reason`n" +
                    "*Лог-файл:* $LogFile"
             Send-TelegramNotification -Message $msg
+            $FinalExit = 2
         } else {
             Write-Log "Robocopy завершён без критических ошибок (код $ExitCode). Длительность: $Duration." "УСПЕХ"
             $msg = "✅ *БЭКАП УСПЕШНО ЗАВЕРШЁН: $TaskName*`n" +
@@ -469,8 +452,8 @@ try {
                    "*Длительность:* $Duration`n" +
                    "*Лог-файл:* $LogFile"
             Send-TelegramNotification -Message $msg
+            $FinalExit = 0
         }
-        $FinalExit = 2
 
     } else {
         Write-Log "КРИТИЧЕСКАЯ ОШИБКА: Robocopy вернул код $ExitCode." "КРИТИЧЕСКАЯ ОШИБКА"
