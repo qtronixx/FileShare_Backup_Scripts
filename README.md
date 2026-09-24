@@ -1,124 +1,227 @@
 # Invoke-MirrorBackup
 
-> 🇷🇺 **Русская версия документации доступна [здесь](README.ru.md).**
+Скрипт резервного копирования / одностороннего зеркалирования (Robocopy) с гибкой
+классификацией ошибок, оповещением в Telegram и автоматической регистрацией заявок
+в Naumen ITSM 365 при критических сбоях. Один скрипт обслуживает произвольное
+количество независимых задач (файловые шары, каталоги с дампами БД и т.п.) —
+настройки задачи задаются отдельным `.psd1`-конфигом, без изменения кода.
 
-Backup/one-way mirroring script (Robocopy) with flexible error classification and Telegram notifications. A single script serves an arbitrary number of independent tasks (file shares, directories with DB dumps, etc.) — task settings are defined in a separate config, without changing the code.
+## Возможности
 
-## Features
+- Одностороннее зеркалирование (`/MIR`) источника в приёмник с многопоточностью (`/MT`).
+- Классификация результата: **УСПЕХ / ВНИМАНИЕ / КРИТИЧЕСКИЙ СБОЙ** — не только по коду
+  возврата Robocopy (сумма битовых флагов), но и по анализу лога на HEX-коды критических
+  ошибок Win32 (например, отказ в доступе), даже если итоговый код возврата некритичен.
+- Unicode-лог Robocopy (`/UNILOG+`) — корректно пишет кириллические имена файлов и путей
+  независимо от кодовой страницы консоли.
+- Уведомления в Telegram на старте, при успехе, предупреждении и критическом сбое:
+  ретраи, таймаут, прокси, полное отключение флагом (`SendTelegram = $false`).
+- Интеграция с Naumen ITSM 365: при КРИТИЧЕСКОМ СБОЕ создаётся заявка с указанием
+  соглашения, услуги, категории и ответственной команды. Дедупликация по `sourceMesId`:
+  повторный сбой той же задачи добавляет комментарий к уже открытой заявке, а не плодит
+  новые. Заявка создаётся в стартовом статусе ЖЦ («Новая») — перевод по цепочке
+  «в работу → решено» выполняют инженеры.
+- Параметр `-TestServiceDesk` — изолированная проверка SD-контура без запуска Robocopy
+  и без влияния на боевую дедупликацию.
+- Настройки полностью в `.psd1`-конфигах: общие — в `common.psd1`, специфичные для
+  задачи — в `tasks/*.psd1`. Задача может переопределить любое общее поле.
+- Защита от параллельного запуска одной задачи (именованный Mutex на задачу; разные
+  задачи друг другу не мешают).
+- Проверка доступности источника и свободного места на приёмнике перед стартом.
+- Автоматическая ротация старых логов.
+- Режим `-DryRun` (Robocopy `/L`) — показывает план, ничего не меняя.
 
-- One-way mirroring (`/MIR`) of a source to a destination with multithreading (`/MT`).
-- Result classification: **SUCCESS / WARNING / CRITICAL FAILURE** — not only by Robocopy exit code (sum of bit flags), but also by analyzing the log for HEX codes of critical Win32 errors (for example, access denied), even if the final exit code is non-critical.
-- Telegram notifications at startup, on success, warning, and critical failure, with retries and timeout in case Telegram is unavailable.
-- Task settings are fully moved to `.psd1` configs: common ones (Telegram, error codes, log retention) — in `common.psd1`, task-specific ones (source/destination, exclusions) — in `tasks/*.psd1`. A task can override any common field.
-- Unicode Robocopy log (`/UNILOG:`) — correctly writes Cyrillic file and path names regardless of the console code page.
-- Protection against parallel execution of the same task (named Mutex per task — different tasks do not interfere with each other and can run simultaneously).
-- Check of source availability and free space on the destination disk before starting.
-- Automatic rotation of old logs.
-- `-DryRun` mode (equivalent to `/L` in Robocopy) — shows what would be done without actual changes.
-
-## Repository structure
+## Структура репозитория
 
 ```
 .
-├── Invoke-MirrorBackup.ps1   # the only script
-├── common.psd1.example       # common config template (without secret) — committed to git
-├── common.psd1               # real config with token — NOT committed (see .gitignore)
+├── Invoke-MirrorBackup.ps1   # единственный боевой скрипт
+├── common.psd1.example       # шаблон общего конфига (без секретов) — коммитится
+├── common.psd1               # реальный конфиг с ключами — НЕ коммитится (.gitignore)
 ├── .gitignore
-└── tasks/
-    ├── share01.psd1          # example: file share
-    └── sql01.psd1            # example: directory with DB backups
+├── tasks/
+│   ├── share01.psd1          # файловая шара
+│   ├── sql01.psd1            # каталог с бэкапами БД
+│   └── _sdtest.psd1          # сервисная задача для end-to-end теста SD:
+│                             # недостижимый источник -> гарантированный критический
+│                             # сбой -> реальная заявка в SD. Не запускать без нужды!
+└── tools/
+    └── sd_debug.ps1          # отладочная отправка заявки в SD напрямую (бисекция
+                              # payload при разборе ошибок REST API)
 ```
 
-## Requirements
+## Требования
 
-- Windows Server / Windows with PowerShell 5.1+ and Robocopy (included with the OS).
-- Domain or local service account with permissions to read the source(s) and write to the destination(s), under which the scheduler task will run.
-- Telegram bot (created via [@BotFather](https://t.me/BotFather)) and the chat_id of the channel/chat where it has been added as a member.
+- Windows Server / Windows с Windows PowerShell 5.1+ и Robocopy (входит в состав ОС).
+- **Все `.ps1` и `.psd1` хранить в кодировке UTF-8 with BOM** — иначе Windows PowerShell
+  5.1 прочитает кириллицу как ANSI-мусор (вплоть до ошибок парсинга скрипта).
+  В VS Code: `"files.encoding": "utf8bom"` для PowerShell-файлов.
+- Доменная/локальная сервисная учётная запись с правами: чтение источника(ов), запись
+  в приёмник(и). От её имени выполняется задание планировщика.
+- Telegram-бот ([@BotFather](https://t.me/BotFather)) и chat_id чата/канала, куда бот
+  добавлен.
+- Ключ доступа (`accessKey`) REST API Naumen ITSM 365 с минимально необходимыми правами
+  (создание заявок и комментариев в рамках целевого соглашения).
 
-## Quick start
+## Коды выхода скрипта
 
-1. Copy `Invoke-MirrorBackup.ps1` and the `tasks/` folder to the server, for example to `C:\Scripts`.
-2. Copy `common.psd1.example` to `common.psd1` next to the script and fill in real `BotToken` and `ChatId`.
-3. Restrict access to the script folder (`common.psd1` stores the token in plain text; the only protection is NTFS permissions):
+| Код | Значение |
+|-----|----------|
+| `0` | Успех: некритичный код Robocopy, критических HEX-кодов в логе нет, бита 8 нет. |
+| `2` | **ВНИМАНИЕ**: часть файлов не скопирована (бит 8 — открытые хэндлы/права) и/или в логе найдены HEX-коды из `CriticalErrorHexCodes`. Для живой файловой шары — штатная ситуация: файлы, заблокированные на момент прогона, обычно подхватываются следующим. Смотрите статистику Failed в итоговой таблице лога. |
+| `1` | **КРИТИЧЕСКИЙ СБОЙ**: код Robocopy вне `NonCriticalExitCodes` (обычно 16+) либо необработанное исключение скрипта. При включённой SD-интеграции — заявка. |
+| `4` | Параллельный запуск той же задачи (мьютекс занят). Не ошибка копирования. |
+
+Рекомендация по мониторингу планировщика: тревога на `1` и `4`; `2` — «посмотреть лог».
+
+## Проверка интеграции с Service Desk
+
+Перед боевым включением `SendToServiceDesk = $true` проверьте контур изолированно:
+
+```powershell
+.\Invoke-MirrorBackup.ps1 -ConfigPath .\tasks\share01.psd1 -TestServiceDesk
+```
+
+Скрипт **не запускает Robocopy**, создаёт одну тестовую заявку с темой `[ТЕСТ] ...` и
+уникальным `sourceMesId` (не пересекается с боевым ключом дедупликации) и выводит её
+UUID в консоль. Проверьте в UI Naumen: статус «Новая», услуга, категория, ответственная
+команда — затем закройте заявку.
+
+Полный end-to-end тест дедупликации (создание → комментарий к открытой → новая после
+закрытия) — задачей `_sdtest.psd1`:
+
+```powershell
+.\Invoke-MirrorBackup.ps1 -ConfigPath .\tasks\_sdtest.psd1   # заявка
+.\Invoke-MirrorBackup.ps1 -ConfigPath .\tasks\_sdtest.psd1   # комментарий к ней
+# закрыть заявку в Naumen, затем:
+.\Invoke-MirrorBackup.ps1 -ConfigPath .\tasks\_sdtest.psd1   # новая заявка
+```
+
+## Быстрый старт
+
+1. Скопируйте `Invoke-MirrorBackup.ps1`, `common.psd1.example` и `tasks/` на сервер,
+   например в `C:\Scripts`.
+2. Скопируйте `common.psd1.example` → `common.psd1`, впишите реальные `BotToken`,
+   `ChatId` и (при использовании SD) `SdBaseUrl`/`SdAccessKey`/`SdAgreement`/`SdTeam`/
+   `SdService`/`SdCategory`. Значения со `$` — только в **одинарных** кавычках.
+3. Ограничьте доступ к папке (в `common.psd1` ключи хранятся открытым текстом):
    ```powershell
    icacls "C:\Scripts" /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F"
    ```
-4. Edit (or add a new) file in `tasks/` for your task — see the [Task configuration](#configuration) section.
-5. Test in dry-run mode without copying or deleting anything:
+4. Отредактируйте/добавьте задачу в `tasks/` (см. [Конфигурация](#конфигурация)).
+5. Холостой прогон:
    ```powershell
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Scripts\Invoke-MirrorBackup.ps1 -ConfigPath C:\Scripts\tasks\share01.psd1 -DryRun
    ```
-   and review the log in the folder specified in the task config's `LogDir`.
-6. Remove `-DryRun` and add one task per `.psd1` to Task Scheduler:
+6. В планировщик — по одной задаче на каждый `.psd1`, от сервисной учётки:
    ```
-   powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Scripts\Invoke-MirrorBackup.ps1 -ConfigPath C:\Scripts\tasks\share01.psd1
-   powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Scripts\Invoke-MirrorBackup.ps1 -ConfigPath C:\Scripts\tasks\sql01.psd1
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\Invoke-MirrorBackup.ps1" -ConfigPath "C:\Scripts\tasks\share01.psd1"
    ```
-   The task must be run under the same service account with the required access permissions.
+   В действии задачи: Program = `powershell.exe`, аргументы — как выше (полные пути!),
+   «Выполнять вне зависимости от входа пользователя», «Наивысшие права»,
+   «Не запускать новый экземпляр».
 
-## Configuration
+## Конфигурация
 
-The final configuration is assembled in ascending priority order:
-**built-in defaults → `common.psd1` → task config (`-ConfigPath`)**.
-Any field from `common.psd1` can be overridden in a specific task.
+Приоритет: **встроенные значения → `common.psd1` → конфиг задачи (`-ConfigPath`)**.
+Любое общее поле можно точечно переопределить в задаче.
 
-### common.psd1 — common for all tasks
+### common.psd1 — общее для всех задач
 
-| Field                           | Purpose                                                                     |
-|--------------------------------|-----------------------------------------------------------------------------|
-| `BotToken`                     | Telegram bot token.                                                         |
-| `ChatId`                       | Chat/channel ID for notifications.                                          |
-| `MessageThreadId`              | Topic ID (if chat has topics). Can be overridden in a task.                |
-| `Threads`                      | Value for Robocopy `/MT:N`.                                                 |
-| `NonCriticalExitCodes`         | Robocopy exit codes not considered critical by themselves.                  |
-| `CriticalErrorHexCodes`        | HEX codes of Win32 errors in the log (e.g., `0x00000005`) that raise the status to "WARNING" even with a non-critical exit code. |
-| `TreatCopiedFailuresAsWarning` | If `$true` — the set bit `8` in the exit code (some files not copied) always gives "WARNING" status rather than a silent "SUCCESS". |
-| `LogRetentionDays`             | How many days to keep old logs before auto-deletion.                        |
-| `MinFreeSpaceGB`               | Free space threshold on the destination disk for a warning.                 |
+| Поле | Назначение |
+|------|------------|
+| `BotToken` | Токен Telegram-бота. |
+| `ChatId` | ID чата/канала для уведомлений. |
+| `MessageThreadId` | ID топика (если чат с топиками). Переопределяемо в задаче. |
+| `SendTelegram` | `$false` — не отправлять, писать сообщения в лог задачи. |
+| `ProxyUrl` / `ProxyUseDefaultCredentials` | Прокси **только для Telegram**; к Naumen — напрямую. |
+| `Threads` | Потоки для `/MT:N`. |
+| `NonCriticalExitCodes` | Коды возврата Robocopy, не считающиеся критичными сами по себе. |
+| `CriticalErrorHexCodes` | HEX-коды Win32-ошибок в логе (формат `(0x...`)`, повышающие статус до ВНИМАНИЕ. |
+| `TreatCopiedFailuresAsWarning` | `$true` — бит 8 (часть файлов не скопирована) даёт статус ВНИМАНИЕ. |
+| `LogRetentionDays` | Хранение логов, дней. |
+| `MinFreeSpaceGB` | Порог свободного места на приёмнике для предупреждения. |
+| `SendToServiceDesk` | `$true` — при КРИТИЧЕСКОМ СБОЕ создаётся заявка в Naumen ITSM 365. |
+| `SdBaseUrl` | Базовый URL инсталляции, например `https://help.example.ru`. |
+| `SdAccessKey` | Ключ REST API (`accessKey`). |
+| `SdAgreement` | Соглашение для заявок, например `'agreement$2730701'`. |
+| `SdService` | Услуга из соглашения, например `'slmService$2730909'`. Опционально. |
+| `SdCategory` | Категория услуги, например `'category$2729963'` (передаётся как атрибут `baseCategory`). Опционально. |
+| `SdTeam` | Ответственная команда, например `'team$2304303'` (атрибут `responsibleTeam`). Опционально. |
+| `SdClientName` | Значение поля `clientName` создаваемой заявки. |
+| `SdSourceMesIdPrefix` | Префикс ключа дедупликации; полный ключ — префикс + санитизированное имя задачи. |
 
-### tasks/*.psd1 — task-specific
+### tasks/*.psd1 — специфичное для задачи
 
-| Field            | Purpose                                                                  |
-|------------------|--------------------------------------------------------------------------|
-| `TaskName`       | Task name — used in logs, Mutex name, and Telegram messages. Required.   |
-| `Source`         | Copy source (UNC path or local). Required.                               |
-| `Destination`    | Copy destination. Required.                                              |
-| `LogDir`         | Folder for this task's logs. Required.                                   |
-| `LogFilePrefix`  | Log file name prefix. Required.                                          |
-| `CopyAcls`       | `$true` — adds `/SEC` (preserve source NTFS permissions). For file shares usually `$true`, for DB dump directories — `$false`. |
-| `ExcludedFiles`  | List of file patterns for `/XF`.                                         |
-| `ExcludedDirs`   | List of directory patterns for `/XD`.                                    |
-| `MessageThreadId`| (optional) separate Telegram topic for this task, if different from the common one. |
+| Поле | Назначение |
+|------|------------|
+| `TaskName` | Имя задачи: логи, Mutex, Telegram, ключ дедупликации SD. Обязательно. |
+| `Source` / `Destination` | Источник (UNC/локальный) и приёмник. Обязательно. |
+| `LogDir` / `LogFilePrefix` | Папка и префикс логов задачи. Обязательно. |
+| `CopyAcls` | `$true` — добавляет `/SEC` (права NTFS). Для шар обычно `$true`, для дампов БД — `$false`. |
+| `ExcludedFiles` / `ExcludedDirs` | Шаблоны для `/XF` и `/XD` (голое имя каталога исключается на любой глубине). |
+| `MessageThreadId` | Свой топик Telegram для задачи. |
+| `SendToServiceDesk`, `Sd*` | Точечные переопределения SD-настроек на задачу. |
 
-## Notification logic
+## Интеграция с Naumen ITSM 365
 
-| Condition                                                                                  | Status             |
-|--------------------------------------------------------------------------------------------|--------------------|
-| Exit code **not** in `NonCriticalExitCodes`                                                | 🚨 CRITICAL FAILURE |
-| Exit code in `NonCriticalExitCodes`, but one of `CriticalErrorHexCodes` found in the log    | ⚠️ WARNING          |
-| Exit code in `NonCriticalExitCodes`, bit 8 set (some files not copied), and `TreatCopiedFailuresAsWarning = $true` | ⚠️ WARNING |
-| Exit code in `NonCriticalExitCodes`, no critical HEX codes found, no bit 8 (or `TreatCopiedFailuresAsWarning = $false`) | ✅ SUCCESS |
+Заявка создаётся **только** при КРИТИЧЕСКОМ СБОЕ (включая необработанные исключения
+скрипта). Поля: `agreement`, `service` (услуга), `baseCategory` (категория),
+`responsibleTeam` (команда), `shortDescr`, `descriptionRTF`, `clientName`, `sourceMesId`.
+Статус при создании **не задаётся** — заявка регистрируется в стартовом статусе ЖЦ
+(«Новая»); «В работе»/«Решено» — действия инженеров.
 
-Robocopy exit codes — sum of bit flags (see [Microsoft documentation](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/robocopy)):
-`0` — no files to copy; `1` — files copied; `2` — extra files/directories detected in destination; `4` — mismatches detected; `8` — some files/directories not copied; `16` — serious error, nothing copied.
+Дедупликация: перед созданием поиск открытой заявки по `sourceMesId`
+(`SdSourceMesIdPrefix` + санитизированное `TaskName`). Найдена открытая — добавляется
+комментарий с деталями повторного сбоя; все найденные resolved/closed — создаётся новая.
 
-## Security
+## Логика оповещений
 
-- The Telegram token is stored in `common.psd1` in plain text deliberately: the token's value is limited by the bot's permissions (it can only write to chats it is already a member of), so if the server is compromised it is enough to revoke it via @BotFather and issue a new one. The only real protection is NTFS permissions on the script folder (see above).
-- `common.psd1` **must not** get into git — commit only `common.psd1.example` (already covered in `.gitignore`).
-- Configs are parsed via `Import-PowerShellDataFile`, which understands only literals (hash tables/strings/arrays/numbers) and cannot execute arbitrary code — unlike dot-sourcing a regular `.ps1` as a config.
+| Условие | Статус |
+|---------|--------|
+| Код возврата вне `NonCriticalExitCodes` | 🚨 КРИТИЧЕСКИЙ СБОЙ → Telegram + заявка SD |
+| Код в `NonCriticalExitCodes`, найден HEX из `CriticalErrorHexCodes` | ⚠️ ВНИМАНИЕ |
+| Код в `NonCriticalExitCodes`, бит 8 и `TreatCopiedFailuresAsWarning = $true` | ⚠️ ВНИМАНИЕ |
+| Код в `NonCriticalExitCodes`, HEX-кодов нет, бита 8 нет | ✅ УСПЕХ |
 
-## Troubleshooting
+Коды возврата Robocopy — сумма битовых флагов: `1` — копировались файлы; `2` — лишние
+файлы в приёмнике; `4` — несовпадения; `8` — часть файлов не скопирована; `16` —
+серьёзная ошибка ([документация](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/robocopy)).
 
-- **"Configuration file not found"** — check the path in `-ConfigPath` and the presence of `common.psd1` next to the script (or pass `-CommonConfigPath` explicitly).
-- **"Source unavailable"** — check the availability of the UNC path and the permissions of the service account under which the task runs.
-- **The task immediately exits with code 2** — the previous run of the same task has not finished yet (parallel-run protection triggered). Different tasks do not affect each other.
-- **Telegram notifications do not arrive** — check `BotToken`/`ChatId` in the config, whether the bot was added to the chat, and look at the task log — sending errors are logged with details of the Telegram API response.
-- Cyrillic in the log looks like mojibake — this should not happen thanks to `/UNILOG:`; if it still does, open the log explicitly as `Get-Content -Encoding Unicode`.
+## Безопасность
 
-## Versions
+- Ключи в `common.psd1` хранятся открытым текстом осознанно (NTFS-права на папку —
+  единственная защита). Ценность ограничена: Telegram-бот пишет только в свои чаты;
+  для `SdAccessKey` — запросите у администратора Naumen минимальные права.
+- `common.psd1` не коммитится — только `common.psd1.example`. Проверка перед пушем:
+  `git status` / `git check-ignore common.psd1`.
+- Конфиги парсятся через `Import-PowerShellDataFile` (только литералы, код не исполняется).
 
-- **4.0** — common `common.psd1` + task configs in `tasks/`, `TreatCopiedFailuresAsWarning`.
-- **3.0** — single script for multiple tasks, config per task as a whole.
-- **2.x** — settings and token moved from code to config, Unicode log, Telegram retries, parallel-run protection.
-- **1.6** — initial version (separate scripts for share and DB, token in code).
+## Устранение неполадок
+
+- **«Конфигурации не найден / не задано поле»** — путь `-ConfigPath`, наличие
+  `common.psd1` рядом со скриптом; путь к нему берётся из `$PSScriptRoot`, вычисляемого
+  в теле скрипта (дефолты в `param()` при `powershell.exe -File` в PS 5.1 не работают).
+- **«Источник недоступен»** — UNC-путь и права сервисной учётки.
+- **Код 4** — предыдущий запуск этой же задачи ещё идёт. Разные задачи независимы.
+- **Заявки плодятся вместо комментариев** — проверьте формат `state` в вашей инсталляции
+  (ожидается `resolved`/`closed`) и что закрытие заявок доведено до конца в UI.
+- **500 при создании заявки** — запустите `tools/sd_debug.ps1` (бисекция payload:
+  закомментируйте подозрительное поле). Полезно убедиться, что категория принадлежит
+  каталогу именно указанной услуги.
+- **Кракозябры в логе/скрипте** — файл не в UTF-8 with BOM; перекодируйте редактором.
+- **Заявка не найдена в UI по времени создания** — `registrationDate` в REST отдаётся
+  в UTC; в UI время московское (+3).
+
+## Версии
+
+- **4.4** — SD: назначение на команду (`SdTeam`), услуга (`SdService`), категория
+  (`SdCategory` → атрибут `baseCategory`); создание без явного `state`; дедупликация
+  ищет открытую заявку среди всех совпадений; захват тела ответа сервера при ошибках REST.
+- **4.3** — `-TestServiceDesk`; прокси только для Telegram; Naumen напрямую.
+- **4.2** — интеграция Naumen ITSM 365, дедупликация по `sourceMesId`.
+- **4.1** — прокси Telegram, `SendTelegram`.
+- **4.0** — `common.psd1` + конфиги задач, `TreatCopiedFailuresAsWarning`.
+- **3.0** — единый скрипт для нескольких задач.
+- **2.x** — вынос настроек в конфиги, Unicode-лог, ретраи Telegram, мьютекс.
+- **1.6** — исходные раздельные скрипты (шара и БД).

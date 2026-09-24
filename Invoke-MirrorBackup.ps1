@@ -1,8 +1,4 @@
-<<<<<<< HEAD
 <#
-=======
-﻿<#
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
 .SYNOPSIS
   Единый скрипт зеркалирования (Robocopy) для нескольких задач бэкапа, настройки которых
   собираются из общего конфига (common.psd1) и конфига конкретной задачи (tasks\*.psd1).
@@ -37,29 +33,17 @@
   реальные данные задачи или испортить историю дедупликации.
 
 .NOTES
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-  Версия: 4.1
-=======
-  Версия: 4.2
-=======
   Версия: 4.3
-=======
-  Версия: 4.4
->>>>>>> 3789457 (feat(sd): team/service/category assignment; fix dedup and URI building)
   Изменения по сравнению с 4.2:
     - Добавлен параметр -TestServiceDesk: создаёт одну тестовую заявку в Service Desk
       с отдельным sourceMesId, без запуска Robocopy — для проверки конфигурации
       Naumen ITSM 365 без риска для боевых данных задачи.
     - Прокси (ProxyUrl/ProxyUseDefaultCredentials) применяется ТОЛЬКО к запросам в
       Telegram — запросы к Naumen ITSM 365 всегда идут напрямую, без прокси.
->>>>>>> c19f9b4 (Добавлен отдельный флаг -TestServiceDesk)
   Изменения по сравнению с 4.1:
     - Добавлена интеграция с Naumen ITSM 365: при КРИТИЧЕСКОМ СБОЕ (и только при нём)
       создаётся заявка через REST API. Дедупликация по sourceMesId — повторный сбой
       той же задачи добавляет комментарий к уже открытой заявке вместо новой.
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
   Изменения по сравнению с 4.0:
     - Добавлена поддержка прокси для отправки в Telegram (ProxyUrl / ProxyUseDefaultCredentials).
     - Добавлена возможность полностью отключить отправку в Telegram (SendTelegram = $false) —
@@ -135,8 +119,6 @@ $Defaults = @{
     SendTelegram                 = $true
     ProxyUrl                     = $null
     ProxyUseDefaultCredentials   = $false
-<<<<<<< HEAD
-=======
 
     # --- Naumen ITSM 365 ---
     SendToServiceDesk  = $false
@@ -145,13 +127,9 @@ $Defaults = @{
     SdAgreement        = $null   # например: 'agreement$2730701' — обязательно при SendToServiceDesk=$true
     SdClientName       = 'Backup Automation'
     SdSourceMesIdPrefix = 'backup_'
-<<<<<<< HEAD
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
-=======
     SdTeam = $null
     SdService = $null
     SdCategory = $null
->>>>>>> 3789457 (feat(sd): team/service/category assignment; fix dedup and URI building)
 }
 
 $Common = Import-Psd1Safe -Path $CommonConfigPath -What "Общий конфиг"
@@ -190,8 +168,6 @@ $SendTelegram     = [bool]$Config.SendTelegram
 $ProxyUrl         = $Config.ProxyUrl
 $ProxyUseDefaultCredentials = [bool]$Config.ProxyUseDefaultCredentials
 
-<<<<<<< HEAD
-=======
 $SendToServiceDesk   = [bool]$Config.SendToServiceDesk
 $SdBaseUrl           = $Config.SdBaseUrl
 $SdAccessKey         = $Config.SdAccessKey
@@ -202,7 +178,6 @@ $SdService           = $Config.SdService
 $SdCategory          = $Config.SdCategory
 $SdSourceMesIdPrefix = $Config.SdSourceMesIdPrefix
 
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
 #endregion
 
 #region ===================== ИНИЦИАЛИЗАЦИЯ =====================
@@ -218,25 +193,18 @@ function Write-Log {
 }
 
 # --- Защита от параллельного запуска: имя мьютекса уникально для каждой задачи ---
-<<<<<<< HEAD
-$MutexName = "Global\Backup_Sync_Mutex_$($TaskName -replace '[^a-zA-Z0-9]', '_')"
-=======
 $SafeTaskName = $TaskName -replace '[^a-zA-Z0-9]', '_'
 $MutexName = "Global\Backup_Sync_Mutex_$SafeTaskName"
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
 $Mutex = New-Object System.Threading.Mutex($false, $MutexName)
 if (-not $Mutex.WaitOne(0)) {
     Write-Log "Обнаружен уже запущенный экземпляр задачи '$TaskName'. Завершение работы." "ПРЕДУПРЕЖДЕНИЕ"
     exit 4
 }
 
-<<<<<<< HEAD
-=======
 # Стабильный ключ дедупликации заявок Service Desk: одна и та же задача — один и тот же
 # sourceMesId, независимо от количества повторных сбоев подряд.
 $SdSourceMesId = "$($SdSourceMesIdPrefix)$SafeTaskName"
 
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
 #endregion
 
 #region ===================== TELEGRAM =====================
@@ -293,8 +261,6 @@ function Send-TelegramNotification {
 
 #endregion
 
-<<<<<<< HEAD
-=======
 #region ===================== NAUMEN ITSM 365 =====================
 
 function Get-SdRestParams {
@@ -397,7 +363,6 @@ function Send-ServiceDeskIncident {
 
 #endregion
 
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
 #region ===================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====================
 
 function Remove-OldLogs {
@@ -452,15 +417,7 @@ if ($TestServiceDesk) {
 }
 
 try {
-<<<<<<< HEAD
-<<<<<<< HEAD
-    Write-Log "===== Запуск задачи '$TaskName' (Invoke-MirrorBackup v4.1) ====="
-=======
-    Write-Log "===== Запуск задачи '$TaskName' (Invoke-MirrorBackup v4.2) ====="
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
-=======
     Write-Log "===== Запуск задачи '$TaskName' (Invoke-MirrorBackup v4.3) ====="
->>>>>>> c19f9b4 (Добавлен отдельный флаг -TestServiceDesk)
     Test-Prerequisites
 
     $StartMsg = "▶️ *ЗАПУСК БЭКАПА: $TaskName*`n" +
@@ -538,23 +495,17 @@ try {
 
     } else {
         Write-Log "КРИТИЧЕСКАЯ ОШИБКА: Robocopy вернул код $ExitCode." "КРИТИЧЕСКАЯ ОШИБКА"
-<<<<<<< HEAD
-=======
         $sdShortDescr = "Критический сбой бэкапа: $TaskName"
         $sdDescription = "Сервер: $env:COMPUTERNAME`nЗадача: $TaskName`nИсточник: $SOURCE`nКод Robocopy: $ExitCode`nДлительность: $Duration`nЛог-файл: $LogFile"
         $sdUuid = Send-ServiceDeskIncident -ShortDescr $sdShortDescr -DescriptionRTF $sdDescription
 
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
         $msg = "🚨 *КРИТИЧЕСКИЙ СБОЙ БЭКАПА: $TaskName*`n" +
                "*Сервер:* $env:COMPUTERNAME`n" +
                "*Код Robocopy:* $ExitCode`n" +
                "*Длительность:* $Duration`n" +
                "*Лог-файл:* $LogFile`n`n" +
                "Срочно проверьте доступ к $SOURCE."
-<<<<<<< HEAD
-=======
         if ($sdUuid) { $msg += "`n*Заявка Service Desk:* $sdUuid" }
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
         Send-TelegramNotification -Message $msg
         $FinalExit = 1
     }
@@ -563,21 +514,15 @@ try {
 }
 catch {
     Write-Log "НЕОБРАБОТАННОЕ ИСКЛЮЧЕНИЕ: $($_.Exception.Message)" "КРИТИЧЕСКАЯ ОШИБКА"
-<<<<<<< HEAD
-=======
     $sdUuid = Send-ServiceDeskIncident `
         -ShortDescr "Скрипт бэкапа аварийно завершился: $TaskName" `
         -DescriptionRTF "Сервер: $env:COMPUTERNAME`nЗадача: $TaskName`nОшибка: $($_.Exception.Message)`nЛог-файл: $LogFile"
 
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
     $msg = "🚨 *СКРИПТ АВАРИЙНО ЗАВЕРШИЛСЯ: $TaskName*`n" +
            "*Сервер:* $env:COMPUTERNAME`n" +
            "*Ошибка:* $($_.Exception.Message)`n" +
            "*Лог-файл:* $LogFile"
-<<<<<<< HEAD
-=======
     if ($sdUuid) { $msg += "`n*Заявка Service Desk:* $sdUuid" }
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
     Send-TelegramNotification -Message $msg
     $FinalExit = 1
 }
@@ -588,8 +533,4 @@ finally {
 
 exit $FinalExit
 
-<<<<<<< HEAD
 #endregion
-=======
-#endregion
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
