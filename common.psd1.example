@@ -15,21 +15,14 @@
     ProxyUrl                   = $null   # например: 'http://proxy.corp.local:3128'
     ProxyUseDefaultCredentials = $false
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-=======
-    
->>>>>>> 3789457 (feat(sd): team/service/category assignment; fix dedup and URI building)
     # --- Naumen ITSM 365 ---
     # Заявка создаётся ТОЛЬКО при статусе КРИТИЧЕСКИЙ СБОЙ. Повторный сбой той же
     # задачи не плодит новую заявку — добавляется комментарий к уже открытой
     # (дедупликация по sourceMesId = SdSourceMesIdPrefix + имя задачи).
-
-    SendToServiceDesk   = $true
-    SdBaseUrl           = 'https://help.helicon.ru'
+    SendToServiceDesk   = $false
+    SdBaseUrl           = 'https://<tenant>.itsm365.ru'
     SdAccessKey         = 'PUT_YOUR_ACCESS_KEY_HERE'
-    # Соглашение в рамках которого создается инцидент
+   # Соглашение в рамках которого создается инцидент
     SdAgreement         = 'agreement$2730701'
     SdClientName        = 'Backup Automation'
     SdSourceMesIdPrefix = 'backup_'
@@ -39,8 +32,11 @@
     # Услуга из соглашения, к которой относятся заявки (UUID slmService из Naumen).
     # Опционально: пусто/$null — заявка создаётся без указания услуги.
     SdService = 'slmService$2730909'
+    # Категория услуги для заявок (UUID category из Naumen). Опционально:
+    # пусто/$null — заявка создаётся без категории.  'category$2729963'
+    SdCategory = 'category$2729963'
 
->>>>>>> c81da18 (Добавлена поддержка отправки ошибок как инциденты в систему ITSM 365)
+
     # --- Robocopy по умолчанию ---
     Threads = 64
 
@@ -55,3 +51,6 @@
     # --- Прочее ---
     MinFreeSpaceGB = 20
 }
+
+# Рекомендуемые права доступа к папке со скриптом/конфигами (выполнить один раз):
+#   icacls "C:\Scripts" /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F"
